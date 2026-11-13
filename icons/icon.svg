@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Lune</title>
+  <defs>
+    <linearGradient id="fond" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7A1AE"/>
+      <stop offset="1" stop-color="#E25674"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#fond)"/>
+  <path d="M411.7 304.54A153.6 153.6 0 1 1 246.57 93.18A134.14 134.14 0 1 0 411.7 304.54Z" fill="#FFFFFF"/>
+  <circle cx="337.89" cy="158.22" r="17.41" fill="#FFFFFF"/>
+</svg>
