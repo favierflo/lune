@@ -44,6 +44,13 @@ function fRange(a, b) {
   return `${fShort(a)} – ${fShort(b)}`;
 }
 const nDays = (n) => `${n} ${Math.abs(n) > 1 ? 'jours' : 'jour'}`;
+/** « entre le 3 et le 17 déc. » ou « entre le 28 nov. et le 4 déc. » */
+function fBetween(a, b) {
+  const da = E.parseKey(a);
+  const db = E.parseKey(b);
+  return da.getMonth() === db.getMonth() ? `entre le ${da.getDate()} et le ${fShort(b)}` : `entre le ${fShort(a)} et le ${fShort(b)}`;
+}
+const CONFIDENCE = { high: 'élevée', medium: 'moyenne', low: 'faible' };
 function rel(n) {
   if (n === 0) return "aujourd'hui";
   if (n === 1) return 'demain';
@@ -122,6 +129,8 @@ const ui = {
 
 const today = () => E.todayKey();
 const showFert = () => state.settings.showFertility !== false;
+/** Mode d'affichage calculé par le moteur (valeurs par défaut sans données). */
+const mode = () => (pred && pred.mode) || { irregular: state.settings.irregularMode === 'on', predictions: state.settings.showPredictions !== false };
 const hormonal = () => C.isHormonal(state.settings.contraception);
 
 function refresh() {
@@ -205,6 +214,7 @@ function dotClass(d) {
   const c = [];
   if (d.period) c.push('period');
   else if (d.predictedPeriod) c.push('predicted');
+  else if (d.possiblePeriod) c.push('possible');
   else if (showFert() && d.ovulation) c.push('ovu');
   else if (showFert() && d.fertile) c.push('fertile');
   if (d.isToday) c.push('today');
@@ -225,12 +235,13 @@ function statusList(d) {
   const out = [];
   if (d.period) out.push(['Règles', 'period']);
   else if (d.predictedPeriod) out.push(['Règles prévues', 'period']);
+  else if (d.possiblePeriod) out.push(['Règles possibles', 'period']);
   if (d.spotting) out.push(['Spotting', 'period']);
-  if (showFert() && !d.period && !d.predictedPeriod) {
+  if (showFert() && !d.period && !d.predictedPeriod && !d.possiblePeriod) {
     if (d.ovulation) {
       const src = { bbt: 'Ovulation (température)', lh: 'Ovulation (test LH)' }[d.ovulationSource] || 'Ovulation estimée';
       out.push([src, 'fertile']);
-    } else if (d.fertile) out.push(['Fenêtre fertile', 'fertile']);
+    } else if (d.fertile) out.push(['Fenêtre fertile estimée', 'fertile']);
   }
   return out;
 }
@@ -314,15 +325,49 @@ function weekStrip(t) {
     .join('')}</div>`;
 }
 
+// Seuils de cycle en cours, d'après les recommandations internationales (SOPK 2023, ACOG, NHS) :
+// au-delà de 35 jours, note douce ; à partir de 90 jours, motif de consultation (après un test de grossesse).
+const LONG_CYCLE_NOTE = 36;
+const LONG_CYCLE_CONSULT = 90;
+const PREG_TEST = ' Si une grossesse est possible, un test urinaire est généralement fiable dès le jour où les règles étaient attendues.';
+
+function missedQuestion(text, yesKey, noKey, noLabel) {
+  return `<div class="notice"><span class="ico">${I.calendar.replace('width="26" height="26"', 'width="20" height="20"')}</span><div><p>${text}</p>
+    <div class="notice-actions"><button data-action="missed-yes" data-key="${yesKey}">Oui, je les ajoute</button><button data-action="missed-no" data-key="${noKey}" style="color:var(--text-2)">${noLabel}</button></div></div></div>`;
+}
+
 function notices(p, t) {
   const out = [];
-  if (p.stale) {
-    out.push(`<div class="notice period"><span class="ico">${I.info}</span><div><p>Aucunes règles notées depuis le ${fShort(p.current.start)}. Mets à jour tes dates pour retrouver des prévisions justes.</p><div class="notice-actions"><button data-action="cal-edit">Mettre à jour</button></div></div></div>`);
-  } else if (p.late) {
-    const preg = !hormonal() && state.settings.goal !== 'track'
-      ? ' Après un rapport non protégé, un test de grossesse est généralement fiable dès le premier jour de retard.'
-      : ' Stress, fatigue, voyage ou maladie peuvent décaler un cycle de quelques jours.';
-    out.push(`<div class="notice period"><span class="ico">${I.info}</span><div><p><b>Règles en retard de ${nDays(p.daysLate)}.</b>${preg}</p></div></div>`);
+  const c = p.current;
+  const preg = hormonal() ? '' : PREG_TEST;
+
+  // Cycle en cours bien plus long que d'habitude : on demande, on ne suppose pas d'erreur.
+  if (p.askMissedPeriod) {
+    out.push(missedQuestion(
+      `Ton cycle en cours dure depuis ${nDays(c.day)}. As-tu eu des règles vers le ${fShort(p.missedPeriodAround)} sans les noter ?`,
+      p.missedPeriodAround, c.start, 'Non, pas de règles',
+    ));
+  } else if (!c.inPeriod && (p.mode.predictions ? (p.mode.irregular ? p.beyondUsual : p.late) : c.day >= LONG_CYCLE_CONSULT)) {
+    // En mode cycles irréguliers, on ne parle de dépassement qu'au-delà de la plage habituelle.
+    let msg;
+    if (c.day >= LONG_CYCLE_CONSULT) {
+      msg = `<b>Ton cycle dure depuis ${nDays(c.day)}.</b>${preg} Pas de règles pendant 3 mois ou plus est un motif pour en parler à un·e médecin, gynécologue ou sage-femme, qui pourra t’orienter.`;
+    } else if (c.day >= LONG_CYCLE_NOTE) {
+      msg = `<b>Ce cycle est plus long que tes cycles habituels</b> (jour ${c.day}).${preg}`;
+    } else {
+      msg = `<b>Tes règles ne sont pas encore arrivées</b> (jour ${c.day} du cycle). Stress, fatigue, voyage ou maladie peuvent décaler un cycle de quelques jours.${preg}`;
+    }
+    out.push(`<div class="notice period"><span class="ico">${I.info}</span><div><p>${msg}</p></div></div>`);
+  }
+
+  // Cycle terminé qui ressemble à deux cycles : on pose la question (le plus récent d'abord),
+  // une seule question à la fois.
+  const sus = p.stats.suspectCycles[p.stats.suspectCycles.length - 1];
+  if (sus && !p.askMissedPeriod) {
+    out.push(missedQuestion(
+      `Ton cycle du ${fShort(sus.start)} au ${fShort(sus.end)} a duré ${nDays(sus.length)}, bien plus que d’habitude. As-tu eu des règles vers le ${fShort(sus.expectedStart)} sans les noter ?`,
+      sus.expectedStart, sus.start, 'Non, c’était un cycle long',
+    ));
   }
   const logged = Object.keys(state.days).length;
   const ageOf = (iso) => (validDate(iso) ? E.diffDays(E.toKey(new Date(iso)), t) : Infinity);
@@ -353,6 +398,8 @@ function ringSVG(p, t) {
   const cm = E.calendarMap(state, c.start, end, t);
   const ovuDay = E.diffDays(c.start, c.ovulation) + 1;
   const normalLen = E.diffDays(c.start, p.originalNextStart);
+  // Couleurs de phase seulement si l'ovulation est observée ou prévisible (cycles réguliers).
+  const guessPhases = c.ovulationSource !== 'predicted' || (p.mode.predictions && !p.mode.irregular);
   const cx = 150, cy = 150, r = 128;
   const per = 360 / N;
   const gap = Math.min(1.8, per * 0.25);
@@ -365,7 +412,7 @@ function ringSVG(p, t) {
     if (d.period || d.predictedPeriod) col = 'var(--period)';
     else if (showFert() && d.ovulation) col = 'var(--ovu)';
     else if (showFert() && d.fertile) { col = 'var(--fertile)'; op = 0.5; }
-    else if (i >= normalLen) col = 'var(--surface-3)';
+    else if (i >= normalLen || !guessPhases) col = 'var(--surface-3)';
     else col = i + 1 < ovuDay ? 'var(--follicular)' : 'var(--luteal)';
     if (k > t && (d.period || d.predictedPeriod || d.fertile || d.ovulation)) op *= 0.45;
     segs += `<path class="ring-seg" d="${arc(cx, cy, r, i * per + gap / 2, (i + 1) * per - gap / 2)}" style="stroke:${col};opacity:${op}"/>`;
@@ -383,18 +430,23 @@ function heroCard(p, t) {
     big = `<small>Jour </small>${c.periodDay}`;
     cls = 'period';
     sub = c.periodEnd > t ? `Fin estimée ${rel(E.diffDays(t, c.periodEnd))}` : 'Dernier jour estimé';
-  } else if (p.late) {
-    lbl = 'Retard';
-    big = `${p.daysLate}<small> ${p.daysLate > 1 ? 'jours' : 'jour'}</small>`;
-    cls = 'period';
-    sub = `Jour ${c.day} du cycle`;
+  } else if (!p.mode.predictions || (p.mode.irregular ? p.beyondUsual : p.late)) {
+    // Prévisions masquées, ou cycle au-delà de l'attendu : formulation neutre, sans compteur de « retard ».
+    lbl = 'Cycle en cours';
+    big = `<small>Jour </small>${c.day}`;
+    sub = p.longestRecent ? `Plus long cycle récent : ${p.longestRecent} j` : p.mode.predictions ? `Règles attendues vers le ${fShort(p.originalNextStart)}` : 'Prévisions masquées';
+  } else if (p.mode.irregular) {
+    // Cycles variables : une plage honnête plutôt qu'une date unique.
+    lbl = 'Cycle en cours';
+    big = `<small>Jour </small>${c.day}`;
+    sub = `Règles probablement ${fBetween(p.forecast.from, p.forecast.to)}`;
   } else if (p.daysUntilNext === 0) {
     lbl = 'Règles prévues';
     big = `<span style="font-size:.62em">Aujourd'hui</span>`;
     cls = 'period';
     sub = `Jour ${c.day} du cycle`;
-  } else if (showFert() && c.fertility !== 'low') {
-    lbl = t === c.ovulation ? 'Ovulation estimée' : 'Fenêtre fertile';
+  } else if (showFert() && (c.fertility === 'high' || c.fertility === 'peak')) {
+    lbl = t === c.ovulation ? 'Ovulation estimée' : 'Fenêtre fertile estimée';
     big = `<small>Jour </small>${c.day}`;
     cls = 'fertile';
     sub = `Règles ${rel(p.daysUntilNext)}`;
@@ -420,7 +472,7 @@ function heroCard(p, t) {
           <div class="ring-sub">${sub}</div>
         </div>
       </div>
-      ${showFert() ? `<div class="legend"><span><i class="swatch period"></i>Règles</span><span><i class="swatch fertile"></i>Fertile</span><span><i class="swatch ovu"></i>Ovulation</span></div>` : ''}
+      ${showFert() && p.mode.predictions && !p.mode.irregular ? `<div class="legend"><span><i class="swatch period"></i>Règles</span><span><i class="swatch fertile"></i>Fertile</span><span><i class="swatch ovu"></i>Ovulation</span></div>` : ''}
       <div class="hero-actions">${action}</div>
     </section>`;
 }
@@ -452,30 +504,55 @@ function upcomingWindow(p, t) {
   return { s: f.fertileStart, e: f.fertileEnd, o: f.ovulation, src: 'predicted' };
 }
 
+// Volontairement, cette carte n'affiche JAMAIS de niveau « faible » : une estimation calendaire
+// ne permet pas de dire quand une grossesse est impossible (pas de « jours sûrs »).
 function fertilityCard(p, t) {
   if (!showFert()) return '';
   const c = p.current;
-  const f = C.FERTILITY[c.fertility] || C.FERTILITY.low;
+  const goal = state.settings.goal;
+  const observed = c.ovulationSource !== 'predicted';
+  const protect = goal === 'conceive' ? '' : `<p class="hint">${goal === 'avoid' ? '<b>Lune ne protège pas d’une grossesse.</b> ' : ''}Une grossesse reste possible à tout moment du cycle quand l’ovulation n’est pas observée.</p>`;
+  if (!p.mode.predictions && !observed) return '';
+  // Cycles variables : pas de fenêtre calculée d'après le calendrier, seulement les observations.
+  if (p.mode.irregular && !observed) {
+    return `
+      <section class="card">
+        <div class="card-head"><h2>Fertilité</h2><span class="pill">Non estimée</span></div>
+        <p class="muted small">Tes cycles varient : Lune ne peut pas situer l’ovulation d’après le calendrier. Note ta glaire cervicale, tes tests d’ovulation (LH) ou ta température : Lune signalera l’ovulation quand elle sera observée.</p>
+        ${protect}
+      </section>`;
+  }
+  if (p.mode.irregular && observed && c.ovulation <= t) {
+    return `
+      <section class="card">
+        <div class="card-head"><h2>Fertilité</h2><span class="pill fertile">Ovulation observée</span></div>
+        <p class="muted small">Ovulation ${c.ovulationSource === 'bbt' ? 'repérée après coup grâce à ta température' : 'signalée par un test LH'}, vers le ${fShort(c.ovulation)}</p>
+        ${protect}
+      </section>`;
+  }
   const w = upcomingWindow(p, t);
-  const inWin = t >= w.s && t <= w.e;
+  const inWin = !p.late && t >= w.s && t <= w.e;
+  const pill = inWin
+    ? `<span class="pill fertile">${c.fertility === 'peak' ? 'Ovulation probable' : 'Fenêtre fertile estimée'}</span>`
+    : '<span class="pill">Estimation</span>';
   let line;
   if (inWin) {
-    const ovu = w.o === t ? "aujourd'hui" : w.o > t ? `prévue le ${fShort(w.o)}` : `estimée le ${fShort(w.o)}`;
-    line = `Fenêtre fertile jusqu'au ${fShort(w.e)} · ovulation ${ovu}`;
+    const ovu = w.o === t ? "aujourd'hui" : w.o > t ? `vers le ${fShort(w.o)}` : `estimée le ${fShort(w.o)}`;
+    // Pas de point final : les dates abrégées (« 7 déc. ») en ont déjà un.
+    line = `Période où l’ovulation est statistiquement plus probable, jusqu’au ${fShort(w.e)} · ovulation ${ovu}`;
   } else if (c.ovulationSource !== 'predicted' && c.ovulation <= t && !p.late) {
-    line = `Ovulation ${c.ovulationSource === 'bbt' ? 'confirmée par ta température' : 'détectée par test LH'} le ${fShort(c.ovulation)}`;
+    line = `Ovulation ${c.ovulationSource === 'bbt' ? 'repérée après coup grâce à ta température' : 'signalée par un test LH'}, vers le ${fShort(c.ovulation)}`;
   } else {
-    line = `Prochaine fenêtre fertile : ${fRange(w.s, w.e)}`;
+    line = `Prochaine fenêtre fertile estimée : ${fRange(w.s, w.e)}`;
   }
-  let note = '';
-  if (c.fertility !== 'low' && state.settings.goal === 'avoid') note = `<p class="hint">Les prévisions ne remplacent pas une contraception : protège-toi pendant la fenêtre fertile.</p>`;
-  if (c.fertility !== 'low' && state.settings.goal === 'conceive') note = `<p class="hint">C'est le bon moment si tu essaies de concevoir.</p>`;
+  const note = goal === 'conceive'
+    ? 'Ces dates sont des estimations : l’ovulation peut survenir à un autre moment, surtout si tes cycles varient.'
+    : `${goal === 'avoid' ? '<b>Lune ne protège pas d’une grossesse.</b> ' : ''}Ces dates sont calculées d’après le calendrier : elles ne disent pas quand une grossesse est impossible et ne remplacent pas une contraception.`;
   return `
     <section class="card">
-      <div class="card-head"><h2>Chances de grossesse</h2><span class="pill ${c.fertility === 'low' ? '' : 'fertile'}">${f.label}</span></div>
-      <div class="fert-meter">${[1, 2, 3].map((i) => `<i class="${i <= f.level ? 'on' : ''}"></i>`).join('')}</div>
-      <p class="muted small" style="margin-top:10px">${line}</p>
-      ${note}
+      <div class="card-head"><h2>Fertilité</h2>${pill}</div>
+      <p class="muted small">${line}</p>
+      <p class="hint">${note}</p>
     </section>`;
 }
 
@@ -496,6 +573,14 @@ function phaseCard(p) {
         <p>Ta contraception met en pause le cycle naturel : les saignements sont généralement des « règles de privation » et il n'y a pas d'ovulation à prévoir.</p></div>
       </section>`;
   }
+  if (c.phase === 'unknown') {
+    return `
+      <section class="card phase-card">
+        <div class="phase-badge" style="background:var(--surface-2);color:var(--text-2)">${I.moon}</div>
+        <div><div class="eyebrow">Jour ${c.day} du cycle</div><h2>Phase non estimée</h2>
+        <p>${p.mode.predictions ? 'Tes cycles varient : Lune ne devine pas ta phase d’après le calendrier.' : 'Les prévisions sont masquées.'} La glaire, les tests d’ovulation et la température permettent de repérer l’ovulation quand elle a lieu.</p></div>
+      </section>`;
+  }
   const ph = p.late ? 'luteal' : c.phase;
   const info = C.PHASES[ph];
   const [bg, fg, ico] = PHASE_STYLE[ph];
@@ -512,22 +597,36 @@ function kvRow(sw, k, v, sub) {
 }
 
 function upcomingCard(p, t) {
+  if (!p.mode.predictions) return '';
+  const f = p.forecast;
+  const irregular = p.mode.irregular;
   const rows = [];
-  if (p.late) rows.push(kvRow('period', 'Règles attendues', fShortW(p.originalNextStart), `retard de ${nDays(p.daysLate)}`));
-  else if (!p.current.inPeriod || p.next.start > p.current.periodEnd) rows.push(kvRow('period', 'Prochaines règles', fShortW(p.next.start), rel(p.daysUntilNext)));
-  if (showFert()) {
+  if (!p.current.inPeriod || p.next.start > p.current.periodEnd) {
+    if (irregular || p.late || f.confidence === 'low') {
+      // Plage probable plutôt qu'une date unique.
+      rows.push(kvRow(irregular ? 'possible' : 'period', 'Prochaines règles', cap(fBetween(f.from, f.to)), `date centrale : ${fShort(f.mostLikely)}`));
+    } else {
+      rows.push(kvRow('period', 'Prochaines règles', fShortW(p.next.start), `${rel(p.daysUntilNext)} · plage ${fRange(f.from, f.to)}`));
+    }
+    if (irregular || p.late) rows.push(kvRow('neutral', 'D’ici 7 jours', `${Math.round(f.probNext7 * 100)} %`, 'probabilité que les règles arrivent'));
+  }
+  if (showFert() && !irregular) {
     const w = upcomingWindow(p, t);
     if (w.e >= t) {
-      rows.push(kvRow('fertile', 'Fenêtre fertile', fRange(w.s, w.e), w.s > t ? rel(E.diffDays(t, w.s)) : 'en cours'));
+      rows.push(kvRow('fertile', 'Fenêtre fertile estimée', fRange(w.s, w.e), w.s > t ? rel(E.diffDays(t, w.s)) : 'en cours'));
       if (w.o >= t) rows.push(kvRow('ovu', 'Ovulation estimée', fShortW(w.o), rel(E.diffDays(t, w.o))));
     }
   }
   const f1 = p.future[1];
-  if (f1) rows.push(kvRow('predicted', 'Règles suivantes', fShortW(f1.periodStart), rel(E.diffDays(t, f1.periodStart))));
+  if (f1 && !irregular) rows.push(kvRow('predicted', 'Règles suivantes', fShortW(f1.periodStart), rel(E.diffDays(t, f1.periodStart))));
+  const foot = irregular
+    ? 'Tes cycles varient : Lune affiche la plage où tes règles arrivent environ 8 fois sur 10, recalculée chaque jour.'
+    : `Confiance ${CONFIDENCE[f.confidence]} · la plage indique où tes règles arrivent environ 8 fois sur 10.`;
   return `
     <section class="card">
       <div class="card-head"><h2>À venir</h2><button class="card-link" data-action="tab" data-tab="calendar">Calendrier</button></div>
       <div class="kv">${rows.join('')}</div>
+      <p class="hint">${foot}</p>
     </section>`;
 }
 
@@ -595,8 +694,9 @@ function viewCalendar() {
       <div class="cal-grid ${anim}">${cells}</div>
       <div class="legend">
         <span><i class="swatch period"></i>Règles</span>
-        <span><i class="swatch predicted"></i>Prévues</span>
-        ${showFert() ? '<span><i class="swatch fertile"></i>Fertile</span><span><i class="swatch ovu"></i>Ovulation</span>' : ''}
+        ${mode().predictions ? (mode().irregular ? '<span><i class="swatch possible"></i>Règles possibles</span>' : '<span><i class="swatch predicted"></i>Prévues</span>') : ''}
+        ${showFert() && mode().predictions && !mode().irregular ? '<span><i class="swatch fertile"></i>Fertile</span><span><i class="swatch ovu"></i>Ovulation</span>' : ''}
+        ${showFert() && mode().irregular ? '<span><i class="swatch ovu"></i>Ovulation observée</span>' : ''}
       </div>
     </section>
     <div class="stack" style="margin-top:14px">${ui.calEdit ? editHelp() : dayCard(ui.calSelected, t)}</div>
@@ -614,7 +714,7 @@ function dayCard(key, t) {
   const future = key > t;
   let fert = '';
   if (showFert() && !d.period && !d.predictedPeriod && (d.fertile || d.ovulation)) {
-    fert = `<p class="muted small" style="margin-top:8px">Chances de grossesse ${d.ovulation ? 'très élevées' : 'élevées'} ce jour-là.</p>`;
+    fert = `<p class="muted small" style="margin-top:8px">${d.ovulation && d.ovulationSource !== 'predicted' ? 'Ovulation repérée grâce à tes observations.' : 'Période où l’ovulation est statistiquement plus probable (estimation).'}</p>`;
   }
   return `
     <section class="card day-card">
@@ -1012,15 +1112,35 @@ function viewInsights() {
     </div>`;
 
   const irregular = st.regularity === 'irregular'
-    ? `<div class="notice" style="margin-top:14px"><span class="ico">${I.info}</span><p>Tes cycles varient de ${nDays(st.variation)}. C'est fréquent, mais si les écarts sont très importants ou s'accompagnent de douleurs, parles-en à un·e professionnel·le de santé.</p></div>`
+    ? `<div class="notice" style="margin-top:14px"><span class="ico">${I.info}</span><p>Tes cycles varient de ${nDays(st.variation)}. C'est fréquent${mode().irregular ? ' : Lune affiche donc des plages de dates plutôt qu’une date précise' : ''}.</p></div>`
     : '';
 
-  return `${head}${tiles}${irregular}
+  return `${head}${tiles}${irregular}${clinicalCard(st)}
     ${cyclesSection(st, t)}
     ${tempSection(t)}
     ${feelingsSection(t)}
     ${historySection(st, t)}
     ${disclaimer()}`;
+}
+
+// Motifs de consultation selon les recommandations internationales (guide SOPK 2023, ACOG, NHS).
+// Formulés comme des motifs d'en parler, jamais comme un diagnostic.
+const CLINICAL_TEXT = {
+  short: 'Au moins 2 de tes 6 derniers cycles ont duré moins de 21 jours.',
+  long: 'Au moins 2 de tes 6 derniers cycles ont duré plus de 35 jours.',
+  veryLong: 'Un de tes cycles de l’année écoulée a duré 90 jours ou plus.',
+  infrequent: 'Moins de 8 règles notées au cours des 12 derniers mois.',
+};
+
+function clinicalCard(st) {
+  const flags = (st.clinicalFlags || []).filter((f) => CLINICAL_TEXT[f]);
+  if (!flags.length || hormonal()) return '';
+  return `
+    <section class="card" style="margin-top:14px">
+      <div class="card-head"><h2>À évoquer avec un·e professionnel·le</h2></div>
+      <ul class="tips">${flags.map((f) => `<li>${CLINICAL_TEXT[f]}</li>`).join('')}</ul>
+      <p class="hint">Selon les recommandations internationales, ces situations méritent d’en parler à un·e médecin, gynécologue ou sage-femme. Ce n’est pas un diagnostic : les causes sont souvent bénignes (stress, sport intensif, changement de poids, arrêt récent d’une contraception…). L’export en tableau (Réglages → Sauvegarde) peut t’aider à préparer le rendez-vous.</p>
+    </section>`;
 }
 
 function cyclesSection(st, t) {
@@ -1036,7 +1156,7 @@ function cyclesSection(st, t) {
     const per = lastP && lastP.start === c.start ? lastP.length : 0;
     rows.push(barRow('En cours', c.day, per, max, 'current', `${c.day} j`));
   }
-  done.forEach((c) => rows.push(barRow(fShort(c.start), c.length, c.periodLength, max, c.valid ? '' : 'invalid', `${c.length} j`)));
+  done.forEach((c) => rows.push(barRow(fShort(c.start), c.length, c.periodLength, max, c.counted ? '' : 'invalid', `${c.length} j${c.suspect ? ' ?' : ''}`)));
   return `
     <h2 class="section-title">Durée de mes cycles</h2>
     <section class="card">
@@ -1064,7 +1184,7 @@ function tempSection(t) {
   return `
     <h2 class="section-title">Température basale · cycle en cours</h2>
     <section class="card">${tempChart(bc, pred.cycleLength)}
-      ${bc.ovulation ? `<p class="hint">Hausse détectée : ovulation estimée le ${fShort(bc.ovulation)}.</p>` : '<p class="hint">Après l’ovulation, la température monte d’environ 0,2 à 0,5 °C et reste haute jusqu’aux règles.</p>'}
+      ${bc.ovulation ? `<p class="hint">Hausse détectée : ovulation estimée le ${fShort(bc.ovulation)}</p>` : '<p class="hint">Après l’ovulation, la température monte d’environ 0,2 à 0,5 °C et reste haute jusqu’aux règles.</p>'}
     </section>`;
 }
 
@@ -1134,7 +1254,7 @@ function feelingsSection(t) {
   return `
     <h2 class="section-title">Mes ressentis</h2>
     <section class="card"><div class="freq">${freq}</div><p class="hint">Sur ${nDays(ss.daysLogged)} renseignés.</p></section>
-    ${phases && !hormonal() ? `<h2 class="section-title">Selon la phase du cycle</h2><section class="card" style="padding-top:6px;padding-bottom:6px">${phases}</section>` : ''}`;
+    ${phases && !hormonal() && !mode().irregular ? `<h2 class="section-title">Selon la phase du cycle</h2><section class="card" style="padding-top:6px;padding-bottom:6px">${phases}</section>` : ''}`;
 }
 
 function historySection(st, t) {
@@ -1143,7 +1263,8 @@ function historySection(st, t) {
     rows.push(`<div class="history-row"><span>Depuis le ${fShort(pred.current.start)}</span><span class="h-len">en cours · ${nDays(pred.current.day)}</span></div>`);
   }
   st.cycles.slice().reverse().forEach((c) => {
-    rows.push(`<div class="history-row"><span>${fShort(c.start)} → ${fShort(c.end)}<br><span class="small muted">Règles : ${nDays(c.periodLength)}</span></span><span class="h-len">${nDays(c.length)}</span></div>`);
+    const tag = c.suspect ? ' · à confirmer (règles non notées ?)' : c.confirmedLong ? ' · cycle long confirmé' : '';
+    rows.push(`<div class="history-row"><span>${fShort(c.start)} → ${fShort(c.end)}<br><span class="small muted">Règles : ${nDays(c.periodLength)}${tag}</span></span><span class="h-len">${nDays(c.length)}</span></div>`);
   });
   return `<h2 class="section-title">Historique</h2><section class="card" style="padding-top:6px;padding-bottom:6px"><div class="history">${rows.join('')}</div></section>`;
 }
@@ -1165,6 +1286,13 @@ function toggle(name, on, aria) {
 
 const validDate = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
 
+function irregularStatus(s) {
+  const m = s.irregularMode || 'auto';
+  if (m === 'on') return 'Toujours activé';
+  if (m === 'off') return 'Toujours désactivé';
+  return mode().irregular ? 'Actif en ce moment : tes cycles varient' : 'Inactif en ce moment';
+}
+
 function viewSettings() {
   const s = state.settings;
   const st = pred.stats || E.getStats(state);
@@ -1177,7 +1305,7 @@ function viewSettings() {
 
   const contraOpts = C.CONTRACEPTION.map((c) => `<option value="${c.id}" ${s.contraception === c.id ? 'selected' : ''}>${c.label}</option>`).join('');
   const goalNote = s.goal === 'avoid'
-    ? "<p class='list-foot'>Important : un calendrier de cycle n'est pas une méthode de contraception fiable. Utilise une contraception adaptée.</p>"
+    ? "<p class='list-foot'>Important : Lune n'est pas une méthode de contraception. Ses dates sont des estimations et une grossesse reste possible, y compris en dehors de la fenêtre fertile estimée. Utilise une contraception adaptée.</p>"
     : '';
 
   return `
@@ -1190,6 +1318,15 @@ function viewSettings() {
       <div class="row"><span class="label">Phase lutéale<small>De l'ovulation aux règles</small></span>${stepper('lutealLength')}</div>
     </div>
     <p class="list-foot">${learn}</p>
+
+    <h2 class="section-title">Prévisions</h2>
+    <div class="list">
+      <div class="row"><span class="label">Afficher les prévisions<small>Prochaines règles et fenêtre fertile</small></span>${toggle('showPredictions', s.showPredictions !== false, 'Afficher les prévisions')}</div>
+      <div class="row" style="flex-wrap:wrap"><span class="label">Mode cycles irréguliers<small>${irregularStatus(s)}</small></span>
+        <div class="segmented" style="width:240px">${[['auto', 'Auto'], ['on', 'Activé'], ['off', 'Désactivé']].map(([id, l]) => `<button class="${(s.irregularMode || 'auto') === id ? 'on' : ''}" data-action="set-irregular" data-value="${id}">${l}</button>`).join('')}</div>
+      </div>
+    </div>
+    <p class="list-foot">Quand les cycles varient beaucoup (SOPK — désormais appelé SMOP —, périménopause, après une grossesse ou l’arrêt d’une contraception…), une date précise serait trompeuse. Ce mode affiche une plage de dates probable, recalculée chaque jour, et ne calcule plus la fenêtre fertile d’après le calendrier : seule une ovulation observée (température, test LH) est signalée. En mode Auto, il s’active quand tes cycles varient de plus de 9 jours.</p>
 
     <h2 class="section-title">Mon objectif</h2>
     <div class="choice-list compact">
@@ -1207,7 +1344,9 @@ function viewSettings() {
 
     <h2 class="section-title">Rappels</h2>
     <div class="list">
-      <button class="row action" data-action="export-ics"><span class="label">Ajouter mes prochaines dates au Calendrier<small>Règles${showFert() ? ' et fenêtres fertiles' : ''} des 6 prochains cycles, avec alertes</small></span>${I.bell}</button>
+      ${!mode().predictions ? '' : mode().irregular
+        ? `<button class="row action" data-action="export-ics"><span class="label">Ajouter ma prochaine plage de règles au Calendrier<small>Cycles variables : une alerte au début de la plage probable</small></span>${I.bell}</button>`
+        : `<button class="row action" data-action="export-ics"><span class="label">Ajouter mes prochaines dates au Calendrier<small>Règles${showFert() ? ' et fenêtres fertiles' : ''} des 6 prochains cycles, avec alertes</small></span>${I.bell}</button>`}
       ${s.contraception === 'pill' ? `<button class="row action" data-action="export-pill"><span class="label">Ajouter le rappel de pilule<small>Tous les jours à ${esc(s.pillTime)}</small></span>${I.bell}</button>` : ''}
     </div>
     <p class="list-foot">Sur iPhone, une app web ne peut pas programmer de notifications toute seule. Lune crée un fichier calendrier : ouvre-le puis choisis « Tout ajouter ». Le Calendrier t'enverra les alertes. Après un changement important, supprime les anciens événements avant de réimporter.</p>
@@ -1257,15 +1396,22 @@ async function exportICS() {
   if (!pred.hasData) { toast("Note d'abord tes règles pour obtenir des prévisions."); return; }
   const t = today();
   const events = [];
+  if (pred.mode.irregular) {
+    // Cycles variables : pas de dates précises sur 6 cycles, seulement la plage probable des prochaines règles.
+    const f = pred.forecast;
+    events.push({ uid: `possible-${f.from}`, title: 'Règles possibles (plage estimée)', description: `Règles probablement ${fBetween(f.from, f.to)} (Lune, cycles variables : estimation peu précise).`, date: f.from, alarmMinutes: -900 });
+    await shareCalendar('lune-previsions.ics', E.buildICS({ calName: 'Lune', events }));
+    return;
+  }
   const c = pred.current;
   if (showFert() && !pred.late && c.fertileStart > t) {
-    events.push({ uid: `fertile-${c.fertileStart}`, title: 'Début de la fenêtre fertile', description: `Fenêtre fertile estimée du ${fShort(c.fertileStart)} au ${fShort(c.fertileEnd)} (Lune).`, date: c.fertileStart, alarmMinutes: 540 });
+    events.push({ uid: `fertile-${c.fertileStart}`, title: 'Début de la fenêtre fertile estimée', description: `Fenêtre fertile estimée du ${fShort(c.fertileStart)} au ${fShort(c.fertileEnd)} (Lune).`, date: c.fertileStart, alarmMinutes: 540 });
     events.push({ uid: `ovu-${c.ovulation}`, title: 'Ovulation estimée', description: 'Estimation Lune.', date: c.ovulation });
   }
   pred.future.slice(0, 6).forEach((f) => {
     events.push({ uid: `period-${f.periodStart}`, title: 'Règles prévues', description: 'Estimation Lune, basée sur tes cycles.', date: f.periodStart, alarmMinutes: -900 });
     if (showFert()) {
-      events.push({ uid: `fertile-${f.fertileStart}`, title: 'Début de la fenêtre fertile', description: `Fenêtre fertile estimée du ${fShort(f.fertileStart)} au ${fShort(f.fertileEnd)} (Lune).`, date: f.fertileStart, alarmMinutes: 540 });
+      events.push({ uid: `fertile-${f.fertileStart}`, title: 'Début de la fenêtre fertile estimée', description: `Fenêtre fertile estimée du ${fShort(f.fertileStart)} au ${fShort(f.fertileEnd)} (Lune).`, date: f.fertileStart, alarmMinutes: 540 });
       events.push({ uid: `ovu-${f.ovulation}`, title: 'Ovulation estimée', description: 'Estimation Lune.', date: f.ovulation });
     }
   });
@@ -1654,6 +1800,24 @@ const actions = {
     window.scrollTo(0, 0);
   },
   'cal-edit-done': () => { ui.calEdit = false; renderView(); },
+  // Réponses aux questions « règles non notées ? »
+  'missed-yes': (el) => {
+    const k = el.dataset.key;
+    ui.tab = 'calendar';
+    ui.calEdit = true;
+    ui.calMonth = k.slice(0, 7);
+    ui.calSelected = null;
+    renderTabbar();
+    renderView();
+    window.scrollTo(0, 0);
+    toast('Touche les jours de règles à ajouter, puis « Terminé ».');
+  },
+  'missed-no': (el) => {
+    const k = el.dataset.key;
+    state.settings.longCycles = [...new Set([...(state.settings.longCycles || []), k])];
+    commit();
+    toast('C’est noté : ce cycle long est pris en compte.');
+  },
 
   'set-step': (el) => {
     const f = el.dataset.field;
@@ -1663,6 +1827,7 @@ const actions = {
   },
   'set-goal': (el) => { state.settings.goal = el.dataset.value; commit(); },
   'set-theme': (el) => { state.settings.theme = el.dataset.value; save(); applyTheme(); renderView(); },
+  'set-irregular': (el) => { state.settings.irregularMode = el.dataset.value; commit(); },
   'export-ics': () => exportICS(),
   'export-pill': () => exportPill(),
   'export-backup': () => exportBackup(),
@@ -1731,6 +1896,7 @@ const changes = {
   },
   pillTime: (el) => { if (el.value) { state.settings.pillTime = el.value; commit(); } },
   showFertility: (el) => { state.settings.showFertility = el.checked; commit(); },
+  showPredictions: (el) => { state.settings.showPredictions = el.checked; commit(); },
   pin: (el) => {
     if (el.checked) startSetPin();
     else {

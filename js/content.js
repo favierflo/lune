@@ -1,7 +1,7 @@
 // Textes et listes d'options affichés dans l'application.
 // Tu peux modifier librement les libellés ici : ils ne changent pas les données déjà enregistrées.
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.2.0';
 
 export const FLOW = [
   { id: 'spotting', label: 'Spotting', level: 0 },
@@ -62,10 +62,12 @@ export const TESTS = [
   { id: 'positive', label: 'Positif' },
 ];
 
+// L'identifiant 'avoid' est conservé pour les données existantes, mais Lune ne promet jamais
+// d'éviter une grossesse : ce n'est pas une méthode de contraception.
 export const GOALS = [
   { id: 'track', label: 'Suivre mon cycle', hint: 'Prévoir mes règles et mieux me connaître' },
-  { id: 'conceive', label: 'Essayer de concevoir', hint: 'Repérer ma fenêtre fertile' },
-  { id: 'avoid', label: 'Éviter une grossesse', hint: 'Garder un œil sur les jours fertiles' },
+  { id: 'conceive', label: 'Essayer de concevoir', hint: 'Savoir quand l’ovulation est la plus probable (estimation)' },
+  { id: 'avoid', label: 'Je ne cherche pas de grossesse', hint: 'Lune ne remplace pas une contraception' },
 ];
 
 export const CONTRACEPTION = [
@@ -81,10 +83,12 @@ export const CONTRACEPTION = [
 
 export const isHormonal = (id) => !!CONTRACEPTION.find((c) => c.id === id)?.hormonal;
 
+// Libellés de fertilité : jamais de « faible » ni de « jour sûr » (une estimation calendaire
+// ne permet pas de savoir quand une grossesse est impossible).
 export const FERTILITY = {
-  low: { label: 'Faibles', level: 1 },
-  high: { label: 'Élevées', level: 2 },
-  peak: { label: 'Très élevées', level: 3 },
+  low: { label: 'Estimation' },
+  high: { label: 'Fenêtre fertile estimée' },
+  peak: { label: 'Ovulation probable' },
 };
 
 export const PHASES = {

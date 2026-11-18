@@ -12,6 +12,10 @@ export const DEFAULT_SETTINGS = {
   goal: 'track',
   contraception: 'none',
   showFertility: true,
+  // 'auto' : activé quand les cycles varient beaucoup ; 'on' / 'off' : choix de l'utilisatrice.
+  irregularMode: 'auto',
+  // false : Lune n'affiche plus aucune prévision (historique et observations seulement).
+  showPredictions: true,
   theme: 'auto',
   pinHash: null,
   pinSalt: null,
@@ -19,6 +23,9 @@ export const DEFAULT_SETTINGS = {
   lastBackup: null,
   backupSnoozedAt: null,
   createdAt: null,
+  // Débuts de cycles longs confirmés par l'utilisatrice (« je n'ai pas oublié de noter mes règles »).
+  // Toujours remplacer ce tableau (jamais le modifier sur place : il est partagé par défaut).
+  longCycles: [],
 };
 
 const NUM_RANGES = { cycleLength: [15, 60], periodLength: [1, 10], lutealLength: [10, 16] };
@@ -26,6 +33,7 @@ const ENUMS = {
   goal: ['track', 'conceive', 'avoid'],
   contraception: ['none', 'pill', 'iud_h', 'iud_cu', 'implant', 'ring', 'condom', 'other'],
   theme: ['auto', 'light', 'dark'],
+  irregularMode: ['auto', 'on', 'off'],
 };
 const DAY_ENUMS = {
   flow: ['spotting', 'light', 'medium', 'heavy'],
@@ -98,6 +106,8 @@ function sanitizeSettings(s) {
       if (typeof v === 'string' && /^\d{2}:\d{2}$/.test(v)) out[k] = v;
     } else if (k === 'lastBackup' || k === 'backupSnoozedAt' || k === 'createdAt') {
       if (v === null || validDate(v)) out[k] = v;
+    } else if (k === 'longCycles') {
+      if (Array.isArray(v)) out[k] = [...new Set(v.filter((x) => typeof x === 'string' && DAY_KEY.test(x)))].slice(-200);
     } else if (k === 'pinHash' || k === 'pinSalt') {
       if (v === null || (typeof v === 'string' && /^[0-9a-f]+$/.test(v))) out[k] = v;
     } else if (typeof DEFAULT_SETTINGS[k] === 'boolean') {

@@ -208,8 +208,8 @@ svg { display: block; }
 .notice.fertile { background: var(--fertile-soft); }
 .notice.fertile .ico { color: var(--fertile-ink); }
 .notice p { font-size: 15px; }
-.notice .notice-actions { margin-top: 2px; margin-bottom: -8px; display: flex; gap: 18px; }
-.notice .notice-actions button { font-weight: 600; color: var(--period-ink); font-size: 15px; min-height: 44px; }
+.notice .notice-actions { margin-top: 2px; margin-bottom: -8px; display: flex; flex-wrap: wrap; column-gap: 18px; row-gap: 0; }
+.notice .notice-actions button { font-weight: 600; color: var(--period-ink); font-size: 15px; min-height: 44px; white-space: nowrap; text-align: left; }
 
 /* ---------- Boutons ---------- */
 
@@ -268,6 +268,8 @@ svg { display: block; }
 .swatch.predicted { border: 1.5px dashed var(--period); }
 .swatch.fertile { background: var(--fertile-soft); border: 1.5px solid var(--fertile); }
 .swatch.ovu { background: var(--fertile); }
+.swatch.possible { background: var(--period-soft); box-shadow: inset 0 0 0 1.5px var(--period-soft); }
+.swatch.neutral { background: var(--text-3); }
 
 /* ---------- Bande de la semaine ---------- */
 
@@ -289,6 +291,7 @@ button:active > .dot { transform: scale(0.9); }
 .dot.period { background: var(--period-strong); color: var(--on-period); font-weight: 650; }
 .dot.predicted { border: 1.75px dashed var(--period); color: var(--period-ink); }
 .dot.fertile { background: var(--fertile-soft); color: var(--fertile-ink); }
+.dot.possible { background: var(--period-soft); color: var(--period-ink); }
 .dot.ovu { background: var(--fertile-soft); color: var(--fertile-ink); box-shadow: inset 0 0 0 2px var(--fertile); font-weight: 650; }
 .dot.today { font-weight: 800; }
 .dot.today::after {
