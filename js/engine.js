@@ -614,28 +614,61 @@ export function getStats(state, today = todayKey()) {
 
 // ───────────────────────────── Température (BBT) ─────────────────────────────
 
-/**
- * Règle « 3 au-dessus de 6 » sur les relevés de [startKey, endKey].
- * Renvoie les relevés, l'ovulation (veille du 1er relevé haut) et la ligne de base.
+/*
+ * Règles de la méthode symptothermique (Sensiplan), réimplémentées à partir de leur description
+ * publiée (cf. reports/Prédiction des cycles irréguliers.md) :
+ *  - règle principale : 3 relevés au-dessus des 6 précédents, le 3ᵉ à + 0,2 °C au moins ;
+ *  - exception 1 : le 3ᵉ n'atteint pas + 0,2 °C, mais un 4ᵉ relevé reste au-dessus ;
+ *  - exception 2 : l'un des relevés 2 ou 3 retombe, mais le 4ᵉ atteint + 0,2 °C.
+ * Les relevés exclus par l'utilisatrice (alcool, fièvre, nuit courte…) sont ignorés, et des trous
+ * trop grands entre relevés empêchent de conclure (« données insuffisantes » plutôt que « rien »).
  */
+const BBT_BASELINE_SPAN = 10; // les 6 relevés de base doivent tenir dans 10 jours
+const BBT_HIGH_MAX_STEP = 2; // au plus 1 jour sans relevé entre deux relevés hauts
+const BBT_COVERAGE_MIN = 0.7; // part des jours mesurés pour conclure « aucune montée détectée »
+
+/** Analyse de la température sur [startKey, endKey] : ovulation (veille du 1er relevé haut), règle, ligne de base. */
 function analyzeBBT(days, startKey, endKey) {
   const src = asDays(days);
   const readings = [];
+  const excluded = [];
   for (const key of rangeKeys(startKey, endKey)) {
-    const temp = readTemp(entryOf(src, key));
-    if (temp !== null) readings.push({ key, temp });
+    const e = entryOf(src, key);
+    const temp = readTemp(e);
+    if (temp === null) continue;
+    if (e && typeof e.tempExcluded === 'string' && e.tempExcluded) excluded.push({ key, temp });
+    else readings.push({ key, temp });
   }
-  for (let i = 6; i + 2 < readings.length; i++) {
+  const none = { readings, excluded, ovulation: null, coverline: null, rule: null, firstHigh: null, confirmedAt: null };
+  for (let i = 6; i < readings.length; i++) {
+    if (diffDays(readings[i - 6].key, readings[i - 1].key) > BBT_BASELINE_SPAN - 1) continue;
     let base = -Infinity;
     for (let j = i - 6; j < i; j++) base = Math.max(base, readings[j].temp);
-    const a = readings[i].temp;
-    const b = readings[i + 1].temp;
-    const c = readings[i + 2].temp;
-    if (a > base + EPS && b > base + EPS && c > base + EPS && c >= base + 0.2 - EPS) {
-      return { readings, ovulation: addDays(readings[i].key, -1), coverline: base };
+    const hi = (k) => readings[i + k];
+    const above = (r) => !!r && r.temp > base + EPS;
+    const strong = (r) => !!r && r.temp >= base + 0.2 - EPS;
+    const contiguous = (n) => {
+      for (let k = 1; k < n; k++) if (!hi(k) || diffDays(hi(k - 1).key, hi(k).key) > BBT_HIGH_MAX_STEP) return false;
+      return true;
+    };
+    if (!above(hi(0))) continue;
+    let rule = null;
+    let last = 0;
+    if (above(hi(1)) && strong(hi(2)) && contiguous(3)) {
+      rule = 'main';
+      last = 2;
+    } else if (above(hi(1)) && above(hi(2)) && above(hi(3)) && contiguous(4)) {
+      rule = 'exception1';
+      last = 3;
+    } else if (strong(hi(3)) && contiguous(4) && Number(above(hi(1))) + Number(above(hi(2))) === 1) {
+      rule = 'exception2';
+      last = 3;
+    }
+    if (rule) {
+      return { ...none, ovulation: addDays(hi(0).key, -1), coverline: base, rule, firstHigh: hi(0).key, confirmedAt: hi(last).key };
     }
   }
-  return { readings, ovulation: null, coverline: null };
+  return none;
 }
 
 /** Ovulation détectée par la courbe de température, ou null. */
@@ -643,13 +676,77 @@ export function detectBBTOvulation(days, startKey, endKey) {
   return analyzeBBT(days, startKey, endKey).ovulation;
 }
 
-/** Premier jour de test LH positif dans [from, to], ou null. */
-function firstPositiveLH(days, from, to) {
+// ── Glaire cervicale ──
+// Score 0–4 (correspondance proposée par le rapport, inspirée de drip/sympto) ; 4 = type « pic ».
+const MUCUS_SCORE = Object.freeze({ dry: 0, nothing: 1, sticky: 2, creamy: 3, watery: 4, eggwhite: 4 });
+const MUCUS_FERTILE_MIN = 2;
+
+function mucusScore(e) {
+  return e && Object.prototype.hasOwnProperty.call(MUCUS_SCORE, e.mucus) ? MUCUS_SCORE[e.mucus] : null;
+}
+
+/**
+ * Jour pic de la glaire : la meilleure qualité vue (score ≥ 2), suivie de 3 jours notés de qualité
+ * strictement inférieure. Le détecteur se réarme si une glaire aussi fertile revient (cycles longs).
+ */
+function analyzeMucus(days, startKey, endKey) {
+  const keys = rangeKeys(startKey, endKey);
+  const scoreOf = (k) => mucusScore(entryOf(days, k));
+  let logged = 0;
+  let fertileOpen = null;
+  let cand = null;
+  let candScore = -1;
+  const peaks = [];
+  for (const k of keys) {
+    const s = scoreOf(k);
+    if (s === null) continue;
+    logged++;
+    if (s >= MUCUS_FERTILE_MIN && fertileOpen === null) fertileOpen = k;
+    // Nouveau candidat : glaire au moins aussi fertile que le candidat actuel (réarmement compris).
+    if (s >= MUCUS_FERTILE_MIN && (cand === null || s >= candScore)) {
+      cand = k;
+      candScore = s;
+    }
+    // Confirmation : les 3 jours suivants sont notés, et de qualité strictement inférieure.
+    if (cand && !peaks.includes(cand)) {
+      let ok = diffDays(cand, endKey) >= 3;
+      for (let d = 1; d <= 3 && ok; d++) {
+        const sd = scoreOf(addDays(cand, d));
+        if (sd === null || sd >= candScore) ok = false;
+      }
+      if (ok) peaks.push(cand);
+    }
+  }
+  const peak = peaks.length ? peaks[peaks.length - 1] : null;
+  // Fenêtre ouverte en ce moment : glaire fertile depuis la dernière clôture (pic + 3 jours).
+  const closedUntil = peak ? addDays(peak, 3) : null;
+  let openSince = null;
+  for (const k of keys) {
+    if (closedUntil && k <= closedUntil) continue;
+    const s = scoreOf(k);
+    if (s !== null && s >= MUCUS_FERTILE_MIN) {
+      openSince = k;
+      break;
+    }
+  }
+  return { logged, fertileOpen, peak, peaks, pending: cand && !peaks.includes(cand) ? cand : null, openSince };
+}
+
+// ── Tests LH ──
+const LH_EPISODE_GAP = 2; // positifs à 2 jours d'écart au plus = même épisode
+const LH_CONFIRM_DAYS = 4; // une montée thermique ou un pic de glaire doit suivre dans les 4 jours
+
+/** Épisodes de tests LH positifs (jours consécutifs ou presque) dans [from, to]. */
+function analyzeLH(days, from, to) {
+  const episodes = [];
   for (const key of rangeKeys(from, to)) {
     const e = entryOf(days, key);
-    if (e && e.ovuTest === 'positive') return key;
+    if (!e || e.ovuTest !== 'positive') continue;
+    const last = episodes[episodes.length - 1];
+    if (last && diffDays(last.end, key) <= LH_EPISODE_GAP) last.end = key;
+    else episodes.push({ start: key, end: key });
   }
-  return null;
+  return episodes;
 }
 
 /** Jour de cycle (1-based) de l'ovulation prédite pour une durée de cycle donnée. */
@@ -657,15 +754,93 @@ function predictedOvulationDay(cycleLength, lutealLength) {
   return Math.max(cycleLength - lutealLength, MIN_OVULATION_DAY);
 }
 
-/** Ovulation d'un cycle TERMINÉ : BBT, sinon 1er LH positif + 1, sinon prédiction. */
-function completedCycleOvulation(days, cycle, lutealLength) {
-  const bbt = detectBBTOvulation(days, cycle.start, cycle.end);
-  if (bbt) return { ovulation: bbt, source: 'bbt' };
-  const lh = firstPositiveLH(days, cycle.start, cycle.end);
-  if (lh) return { ovulation: addDays(lh, 1), source: 'lh' };
+/**
+ * Combine température, glaire et tests LH sur [startKey, endKey].
+ * status : 'confirmed' (température + glaire ou LH concordants), 'probable' (un seul signe),
+ * 'notDetected' (cycle terminé, température bien mesurée, aucune montée), sinon null.
+ * Garde-fous LH : un positif n'est retenu seul que s'il n'y a qu'un épisode, que les cycles sont
+ * réguliers et qu'aucun autre signe saisi ne le contredit.
+ */
+function ovulationEvidence(days, startKey, endKey, { irregular = false, closed = false } = {}) {
+  const bbt = analyzeBBT(days, startKey, endKey);
+  const mucus = analyzeMucus(days, startKey, endKey);
+  const episodes = analyzeLH(days, startKey, endKey);
+  const confirms = (ep) =>
+    (bbt.firstHigh && diffDays(ep.start, bbt.firstHigh) >= 1 && diffDays(ep.start, bbt.firstHigh) <= LH_CONFIRM_DAYS + 1) ||
+    (mucus.peak && diffDays(ep.start, mucus.peak) >= -2 && diffDays(ep.start, mucus.peak) <= LH_CONFIRM_DAYS);
+
+  let lh = null;
+  let lhStatus = null;
+  if (episodes.length) {
+    const ok = episodes.find(confirms);
+    lh = ok || episodes[episodes.length - 1];
+    if (ok) lhStatus = 'confirmed';
+    else if (episodes.length > 1) lhStatus = 'multiple';
+    else if (!closed && diffDays(lh.start, endKey) <= LH_CONFIRM_DAYS) lhStatus = 'pending';
+    else if (bbt.readings.length >= 6 || mucus.logged >= 3) lhStatus = 'unconfirmed';
+    else lhStatus = 'alone';
+  }
+
+  let ovulation = null;
+  let source = null;
+  let status = null;
+  if (bbt.ovulation) {
+    ovulation = bbt.ovulation;
+    source = 'bbt';
+    const mucusAgrees = mucus.peak && Math.abs(diffDays(mucus.peak, bbt.ovulation)) <= 3;
+    status = mucusAgrees || lhStatus === 'confirmed' ? 'confirmed' : 'probable';
+  } else if (mucus.peak) {
+    ovulation = mucus.peak;
+    source = 'mucus';
+    status = 'probable';
+  } else if (lh && !irregular && (lhStatus === 'alone' || lhStatus === 'pending')) {
+    ovulation = addDays(lh.start, 1);
+    source = 'lh';
+    status = 'probable';
+  } else if (closed) {
+    const span = diffDays(startKey, endKey) + 1;
+    if (bbt.readings.length >= 12 && bbt.readings.length / span >= BBT_COVERAGE_MIN) status = 'notDetected';
+  }
+  return { ovulation, source, status, bbt, mucus, episodes, lh, lhStatus };
+}
+
+/** Ovulation d'un cycle TERMINÉ : signes observés, sinon estimation calendaire (ou rien si « non détectée »). */
+function completedCycleOvulation(days, cycle, lutealLength, irregular = false) {
+  const ev = ovulationEvidence(days, cycle.start, cycle.end, { irregular, closed: true });
+  if (ev.ovulation) return { ovulation: ev.ovulation, source: ev.source, status: ev.status, open: ev.mucus.fertileOpen };
+  if (ev.status === 'notDetected') return { ovulation: null, source: 'none', status: 'notDetected', open: null };
   return {
     ovulation: addDays(cycle.start, predictedOvulationDay(cycle.length, lutealLength) - 1),
     source: 'predicted',
+    status: 'calendar',
+    open: null,
+  };
+}
+
+// ── Phase lutéale personnelle ──
+// A priori d'environ 13 jours (ovulation datée par la température ou « LH + 1 »), poids de 3 cycles
+// fictifs, bornes 9–17 jours. Une phase lutéale courte isolée (≤ 10 j) n'est pas comptée.
+const LUTEAL_PRIOR = 13;
+const LUTEAL_PRIOR_WEIGHT = 3;
+const LUTEAL_BOUNDS = [9, 17];
+const LUTEAL_SHORT = 10;
+
+function personalLuteal(pastOvulations, settings) {
+  // Si la valeur réglée a été changée (≠ 14 par défaut), c'est elle qui sert d'a priori.
+  const prior = settings.lutealLength === DEFAULT_SETTINGS.lutealLength ? LUTEAL_PRIOR : settings.lutealLength;
+  const values = pastOvulations
+    .filter((o) => o.source !== 'predicted' && o.source !== 'none' && o.ovulation && o.luteal >= 5 && o.luteal <= 22)
+    .slice(-6)
+    .map((o) => o.luteal);
+  const shortCount = values.filter((v) => v <= LUTEAL_SHORT).length;
+  const used = shortCount >= 2 ? values : values.filter((v) => v > LUTEAL_SHORT);
+  const est = (LUTEAL_PRIOR_WEIGHT * prior + used.reduce((s, v) => s + v, 0)) / (LUTEAL_PRIOR_WEIGHT + used.length);
+  return {
+    length: clamp(Math.round(est), LUTEAL_BOUNDS[0], LUTEAL_BOUNDS[1]),
+    n: values.length,
+    values,
+    lastShort: values.length > 0 && values[values.length - 1] <= LUTEAL_SHORT,
+    repeatedShort: shortCount >= 2,
   };
 }
 
@@ -706,21 +881,29 @@ function buildModel(state, todayArg) {
   const inPeriod = (!!todayEntry && isPeriodFlow(todayEntry.flow)) || (today >= start && today <= expectedEnd);
   const periodEnd = period.end > expectedEnd ? period.end : expectedEnd;
 
+  // ── Ovulations des cycles terminés (antérieurs au cycle en cours) et phase lutéale personnelle ──
+  const pastOvulations = [];
+  for (const cycle of stats.cycles) {
+    if (cycle.start >= start) continue;
+    const w = completedCycleOvulation(days, cycle, lutealLength, irregular);
+    const luteal = w.ovulation ? diffDays(w.ovulation, cycle.end) : null;
+    pastOvulations.push({ start: cycle.start, end: cycle.end, ...w, luteal });
+    // Cycle suspect (règles peut-être non notées) : pas d'ovulation calendaire inventée au milieu.
+    if (!w.ovulation || (cycle.suspect && w.source === 'predicted')) continue;
+    pastWindows.set(cycle.start, w);
+  }
+  const luteal = personalLuteal(pastOvulations, settings);
+
+  // ── Ovulation du cycle en cours : signes observés (température > glaire > LH), sinon calendrier ──
+  const evidence = ovulationEvidence(days, start, today, { irregular, closed: false });
   let ovulation;
   let ovulationSource;
-  const bbt = detectBBTOvulation(days, start, today);
-  if (bbt) {
-    ovulation = bbt;
-    ovulationSource = 'bbt';
+  if (evidence.ovulation) {
+    ovulation = evidence.ovulation;
+    ovulationSource = evidence.source;
   } else {
-    const lh = firstPositiveLH(days, start, today);
-    if (lh) {
-      ovulation = addDays(lh, 1);
-      ovulationSource = 'lh';
-    } else {
-      ovulation = addDays(start, ovuDay - 1);
-      ovulationSource = 'predicted';
-    }
+    ovulation = addDays(start, ovuDay - 1);
+    ovulationSource = 'predicted';
   }
 
   const rel = diffDays(ovulation, today); // position d'aujourd'hui par rapport à l'ovulation
@@ -741,6 +924,15 @@ function buildModel(state, todayArg) {
     phase = 'unknown';
     fertility = 'unknown';
   }
+  // Signes observés aujourd'hui : ils priment sur le calendrier (et valent aussi en cycles irréguliers).
+  const mucusToday = mucusScore(todayEntry);
+  const lhRecent = evidence.episodes.some((ep) => diffDays(ep.end, today) >= 0 && diffDays(ep.end, today) <= 1);
+  const mucusOpen = evidence.mucus.openSince !== null && !(evidence.bbt.confirmedAt && evidence.bbt.confirmedAt <= today && evidence.bbt.ovulation >= evidence.mucus.openSince);
+  if (!inPeriod) {
+    if (lhRecent || mucusToday === 4) fertility = 'peak';
+    else if (mucusOpen && fertility !== 'peak') fertility = 'high';
+  }
+  const ovulationStatus = evidence.status || (ovulationSource === 'predicted' ? 'calendar' : null);
 
   const current = {
     start,
@@ -754,18 +946,33 @@ function buildModel(state, todayArg) {
     fertileEnd: addDays(ovulation, 1),
     phase,
     fertility,
+    // 'confirmed' | 'probable' | 'calendar'
+    ovulationStatus,
+    // Fenêtre ouverte par la glaire observée (même sans ovulation identifiée), ou null.
+    fertileObservedFrom: mucusOpen ? evidence.mucus.openSince : null,
+    // Résumé des signes du cycle, pour l'affichage.
+    signals: {
+      tempRule: evidence.bbt.rule,
+      tempShift: evidence.bbt.firstHigh,
+      tempReadings: evidence.bbt.readings.length,
+      tempExcluded: evidence.bbt.excluded.length,
+      mucusOpen: evidence.mucus.fertileOpen,
+      mucusPeak: evidence.mucus.peak,
+      mucusPending: evidence.mucus.pending,
+      lhStatus: evidence.lhStatus,
+      lhDate: evidence.lh ? evidence.lh.start : null,
+      lhEpisodes: evidence.episodes.length,
+    },
   };
 
   // ── Prochaines règles & retard ──
   // Ovulation observée (BBT / LH) : la phase lutéale est stable → ovulation + luteal + 1.
-  const originalNextStart =
-    ovulationSource === 'bbt' || ovulationSource === 'lh'
-      ? addDays(ovulation, lutealLength + 1)
-      : addDays(start, cycleLength);
-  const observed = ovulationSource === 'bbt' || ovulationSource === 'lh';
+  // Ovulation observée : règles = ovulation + phase lutéale personnelle + 1 (jamais à rebours).
+  const observed = ovulationSource !== 'predicted';
+  const originalNextStart = observed ? addDays(ovulation, luteal.length + 1) : addDays(start, cycleLength);
   // Plages de dates, recalculées chaque jour sachant que les règles ne sont pas encore arrivées.
   const forecast = observed
-    ? buildForecast(start, today, diffDays(start, originalNextStart), OBSERVED_SCALE, OBSERVED_NU)
+    ? buildForecast(start, today, diffDays(start, originalNextStart), ovulationSource === 'lh' ? OBSERVED_SCALE + 0.5 : OBSERVED_SCALE, OBSERVED_NU)
     : buildForecast(start, today, stats.model.mu, stats.model.scale, stats.model.nu);
   const late = today > originalNextStart;
   const daysLate = late ? diffDays(originalNextStart, today) : 0;
@@ -785,15 +992,6 @@ function buildModel(state, todayArg) {
       fertileStart: addDays(ovu, -5),
       fertileEnd: addDays(ovu, 1),
     });
-  }
-
-  // ── Ovulations des cycles terminés (antérieurs au cycle en cours) ──
-  for (const cycle of stats.cycles) {
-    if (cycle.start >= start) continue;
-    const w = completedCycleOvulation(days, cycle, lutealLength);
-    // Cycle suspect (règles peut-être non notées) : pas d'ovulation calendaire inventée au milieu.
-    if (cycle.suspect && w.source === 'predicted') continue;
-    pastWindows.set(cycle.start, w);
   }
 
   // ── Cycle en cours anormalement long : règles peut-être non notées ? ──
@@ -820,6 +1018,10 @@ function buildModel(state, todayArg) {
     // Dépasse la plage habituelle (90e centile de la loi non conditionnée).
     beyondUsual: today > forecast.usualTo,
     mode: { irregular, predictions: predictionsOn },
+    // Phase lutéale personnelle : { length, n, values, lastShort, repeatedShort }
+    luteal,
+    // Ovulation de chaque cycle terminé : { start, end, ovulation, source, status, luteal }
+    pastOvulations,
     // Vrai quand le cycle en cours dépasse nettement la durée habituelle sans confirmation :
     // l'app demande alors si des règles ont eu lieu vers `missedPeriodAround`.
     askMissedPeriod,
@@ -886,13 +1088,21 @@ export function calendarMap(state, fromKey, endKey, today = todayKey()) {
     // seules les ovulations observées (température, test LH) sont affichées.
     const windows = [
       ...model.pastWindows.values(),
-      { ovulation: p.current.ovulation, source: p.current.ovulationSource },
+      {
+        ovulation: p.current.ovulation,
+        source: p.current.ovulationSource,
+        open: p.current.ovulationSource !== 'predicted' ? p.current.signals.mucusOpen : null,
+      },
       ...(precise ? p.future.map((f) => ({ ovulation: f.ovulation, source: 'predicted' })) : []),
     ].filter((w) => precise || w.source !== 'predicted');
     for (const w of windows) {
-      for (const k of rangeKeys(addDays(w.ovulation, -5), addDays(w.ovulation, 1))) fertile.add(k);
+      // La glaire peut ouvrir la fenêtre plus tôt que « ovulation − 5 ».
+      const from = w.open && w.open < addDays(w.ovulation, -5) ? w.open : addDays(w.ovulation, -5);
+      for (const k of rangeKeys(from, addDays(w.ovulation, 1))) fertile.add(k);
       if (!ovulations.has(w.ovulation)) ovulations.set(w.ovulation, w.source);
     }
+    // Fenêtre ouverte par la glaire observée, sans ovulation encore identifiée : jusqu'à aujourd'hui.
+    if (p.current.fertileObservedFrom) for (const k of rangeKeys(p.current.fertileObservedFrom, t)) fertile.add(k);
 
     // Débuts de cycle : règles saisies (<= aujourd'hui) + règles futures prévues.
     starts = [...model.pastPeriods.map((pp) => pp.start), ...(precise ? p.future.map((f) => f.periodStart) : [])];
@@ -931,10 +1141,15 @@ export function calendarMap(state, fromKey, endKey, today = todayKey()) {
 export function bbtChart(state, startKey, endKey) {
   const days = asDays(state && state.days);
   const a = analyzeBBT(days, startKey, endKey);
+  const toPoint = (r) => ({ key: r.key, cycleDay: diffDays(startKey, r.key) + 1, temp: r.temp });
   return {
-    points: a.readings.map((r) => ({ key: r.key, cycleDay: diffDays(startKey, r.key) + 1, temp: r.temp })),
+    points: a.readings.map(toPoint),
+    // Relevés exclus par l'utilisatrice (affichés à part, non utilisés pour la détection).
+    excluded: a.excluded.map(toPoint),
     ovulation: a.ovulation,
     coverline: a.coverline,
+    // 'main' | 'exception1' | 'exception2' | null
+    rule: a.rule,
   };
 }
 

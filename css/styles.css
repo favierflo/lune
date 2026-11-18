@@ -540,6 +540,12 @@ button.row:active { background: var(--surface-2); }
 
 .logged-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
+.signals { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 4px; }
+.sig-row { display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 7px 0; font-size: 14px; }
+.sig-row + .sig-row { border-top: 1px solid var(--line); }
+.sig-row .k { color: var(--text-2); font-weight: 600; }
+.sig-row .v { color: var(--text); }
+
 .empty { text-align: center; padding: 28px 18px; }
 .empty .ill { width: 72px; height: 72px; margin: 0 auto 14px; color: var(--period); }
 .empty h2 { font-family: var(--font-round); font-size: 22px; margin-bottom: 6px; }

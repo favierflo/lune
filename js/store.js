@@ -37,7 +37,9 @@ const ENUMS = {
 };
 const DAY_ENUMS = {
   flow: ['spotting', 'light', 'medium', 'heavy'],
-  mucus: ['dry', 'sticky', 'creamy', 'watery', 'eggwhite'],
+  mucus: ['dry', 'nothing', 'sticky', 'creamy', 'watery', 'eggwhite'],
+  // Relevé de température exclu de la détection, avec son motif.
+  tempExcluded: ['alcohol', 'illness', 'sleep', 'time', 'other'],
   sex: ['protected', 'unprotected'],
   ovuTest: ['positive', 'negative'],
   pregTest: ['positive', 'negative'],
@@ -180,7 +182,7 @@ export function parseBackup(text) {
 }
 
 export function exportCSV(state, cycleDayOf, lbl = (field, v) => v) {
-  const cols = ['date', 'jour_du_cycle', 'flux', 'humeurs', 'symptomes', 'energie', 'glaire', 'rapport', 'test_ovulation', 'test_grossesse', 'pilule', 'temperature', 'poids', 'note'];
+  const cols = ['date', 'jour_du_cycle', 'flux', 'humeurs', 'symptomes', 'energie', 'glaire', 'rapport', 'test_ovulation', 'test_grossesse', 'pilule', 'temperature', 'temperature_exclue', 'poids', 'note'];
   const q = (v) => {
     const s = String(v ?? '');
     return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -194,7 +196,7 @@ export function exportCSV(state, cycleDayOf, lbl = (field, v) => v) {
       const many = (f) => (d[f] || []).map((v) => lbl(f, v)).join(', ');
       return [
         k, cycleDayOf(k) ?? '', one('flow'), many('moods'), many('symptoms'), one('energy'), one('mucus'), one('sex'),
-        one('ovuTest'), one('pregTest'), d.pill ? 'oui' : '', num(d.temp), num(d.weight), d.note,
+        one('ovuTest'), one('pregTest'), d.pill ? 'oui' : '', num(d.temp), one('tempExcluded'), num(d.weight), d.note,
       ].map(q).join(';');
     });
   return '﻿' + [cols.join(';'), ...rows].join('\r\n');

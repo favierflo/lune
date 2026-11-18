@@ -1,7 +1,7 @@
 // Textes et listes d'options affichés dans l'application.
 // Tu peux modifier librement les libellés ici : ils ne changent pas les données déjà enregistrées.
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 
 export const FLOW = [
   { id: 'spotting', label: 'Spotting', level: 0 },
@@ -44,12 +44,24 @@ export const ENERGY = [
   { id: 3, label: 'Élevée' },
 ];
 
+// L'ordre suit la qualité de la glaire (score 0 à 4 dans le moteur) ; « aqueuse » et
+// « blanc d'œuf » sont de type « pic » (les plus fertiles).
 export const MUCUS = [
-  { id: 'dry', label: 'Sèche', hint: 'Peu ou pas de glaire' },
+  { id: 'dry', label: 'Sèche', hint: 'Sensation de sécheresse' },
+  { id: 'nothing', label: 'Rien vu, rien senti', hint: 'Ni sécheresse, ni glaire visible' },
   { id: 'sticky', label: 'Collante', hint: 'Épaisse, grumeleuse' },
   { id: 'creamy', label: 'Crémeuse', hint: 'Blanche, comme une lotion' },
   { id: 'watery', label: 'Aqueuse', hint: 'Fluide et humide' },
   { id: 'eggwhite', label: "Blanc d'œuf", hint: 'Filante et transparente : signe de fertilité' },
+];
+
+// Motifs pour exclure un relevé de température perturbé (non utilisé pour repérer l'ovulation).
+export const TEMP_EXCLUDE = [
+  { id: 'alcohol', label: 'Alcool' },
+  { id: 'illness', label: 'Fièvre ou maladie' },
+  { id: 'sleep', label: 'Nuit courte' },
+  { id: 'time', label: 'Heure décalée' },
+  { id: 'other', label: 'Autre' },
 ];
 
 export const SEX = [

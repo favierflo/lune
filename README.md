@@ -89,8 +89,10 @@ Pour corriger des dates passées, allez dans **Calendrier**, touchez le crayon �
 ### Noter votre journée
 Touchez le bouton **+** en haut de l'écran, ou n'importe quel jour du calendrier. Tout s'enregistre instantanément ; touchez à nouveau une option pour l'effacer. Les flèches ‹ › permettent de passer d'un jour à l'autre.
 
-- **Température basale** : prenez-la au réveil, avant de vous lever, à la même heure chaque jour.
-- **Glaire « blanc d'œuf »** et **test d'ovulation positif** : ce sont des signes des jours les plus fertiles.
+- **Température basale** : prenez-la au réveil, avant de vous lever, à la même heure chaque jour. Si un relevé est perturbé (alcool, fièvre, nuit courte, heure décalée), indiquez-le sous « Relevé inhabituel ? » : il restera visible mais ne servira pas à repérer l'ovulation.
+- **Glaire cervicale** : notez son aspect chaque jour, y compris « Sèche » ou « Rien vu, rien senti ». La glaire « aqueuse » ou « blanc d'œuf » annonce les jours les plus fertiles, et Lune repère le **jour pic**.
+- **Test d'ovulation (LH)** : un test positif annonce une ovulation probable dans 1 à 2 jours.
+- La carte **Fertilité** résume ce que vous avez observé pendant le cycle : glaire, température et tests LH.
 
 ### Lire l'écran « Aujourd'hui »
 - **L'anneau** représente le cycle en cours : rose pour les règles, vert pour la fenêtre fertile, vert foncé pour l'ovulation. Le rond blanc indique aujourd'hui, et les jours à venir sont plus pâles.
@@ -125,10 +127,22 @@ Les calculs sont simples et transparents :
   - La même question est posée pour le cycle en cours quand il dépasse ce seuil.
 - **Ovulation estimée** : on prend la durée du cycle moins la phase lutéale (14 jours par défaut, réglable entre 10 et 16). Pour un cycle de 28 jours, cela donne le jour 14.
 - **Fenêtre fertile** : elle va de 5 jours avant l'ovulation jusqu'au lendemain de l'ovulation, soit 7 jours.
-- **Confirmation de l'ovulation** :
-  - **Température** : la règle « 3 au-dessus de 6 » s'applique. Il faut 3 relevés consécutifs plus hauts que les 6 précédents, dont le troisième dépasse leur maximum d'au moins 0,2 °C.
-  - **Test LH positif** : l'ovulation est estimée au lendemain.
-  - Une fois l'ovulation confirmée, les prochaines règles sont recalculées à partir d'elle.
+- **Signes du corps** : ils priment toujours sur le calendrier. Ce sont les règles de la méthode symptothermique (Sensiplan), réécrites à partir de leur description publiée.
+  - **Température** : la règle principale demande 3 relevés plus hauts que les 6 précédents, le troisième dépassant leur maximum d'au moins 0,2 °C.
+    - Deux exceptions couvrent les montées lentes. Dans la première, un 4ᵉ relevé reste haut alors que le 3ᵉ n'atteint pas + 0,2 °C. Dans la seconde, un relevé retombe mais le 4ᵉ atteint + 0,2 °C.
+    - Les relevés exclus sont ignorés. Si les relevés sont trop espacés, Lune ne conclut rien.
+    - Un cycle terminé, bien mesuré et sans montée est indiqué « aucune montée de température détectée ».
+  - **Glaire** : elle reçoit un score de 0 (sèche) à 4 (aqueuse ou blanc d'œuf).
+    - La première glaire au moins « collante » ouvre la fenêtre fertile.
+    - Le **jour pic** est la glaire la plus fertile, suivie de 3 jours de glaire moins fertile. C'est l'estimation de l'ovulation.
+    - Si une glaire très fertile revient, la recherche du pic recommence, ce qui arrive dans les cycles longs.
+  - **Test LH** : l'ovulation est estimée au lendemain du premier test positif. Ce test est retenu seul seulement s'il n'y a qu'un épisode positif et si les cycles sont réguliers.
+    - Si la température ou la glaire ne le confirment pas, si plusieurs pics apparaissent, ou si le mode cycles irréguliers est actif, le test reste « non confirmé » : les faux pics sont fréquents en cas de SOPK.
+  - **Statut** : l'ovulation est **confirmée** quand la température et la glaire (ou un test LH) concordent, et **probable** avec un seul signe.
+- **Phase lutéale personnelle** : c'est la durée entre l'ovulation et les règles. Lune l'apprend sur vos cycles où l'ovulation a été observée.
+  - Elle part de 13 jours et compte pour 3 cycles tant que vous en avez peu, entre 9 et 17 jours.
+  - Une phase courte isolée (10 jours ou moins) est signalée mais pas comptée.
+  - Une fois l'ovulation observée, les prochaines règles sont annoncées à « ovulation + phase lutéale personnelle », avec une plage d'environ ± 2 à 3 jours.
 - **Règles qui tardent** : si les règles n'arrivent pas à la date prévue, Lune décale les prévisions suivantes et affiche des messages gradués.
   - D'abord, elle rappelle qu'un cycle peut varier de quelques jours, et qu'un test de grossesse est généralement fiable dès le jour où les règles étaient attendues, si une grossesse est possible.
   - À partir de 36 jours, elle indique que le cycle est plus long que d'habitude.

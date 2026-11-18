@@ -239,7 +239,7 @@ function statusList(d) {
   if (d.spotting) out.push(['Spotting', 'period']);
   if (showFert() && !d.period && !d.predictedPeriod && !d.possiblePeriod) {
     if (d.ovulation) {
-      const src = { bbt: 'Ovulation (température)', lh: 'Ovulation (test LH)' }[d.ovulationSource] || 'Ovulation estimée';
+      const src = { bbt: 'Ovulation (température)', mucus: 'Ovulation (glaire)', lh: 'Ovulation (test LH)' }[d.ovulationSource] || 'Ovulation estimée';
       out.push([src, 'fertile']);
     } else if (d.fertile) out.push(['Fenêtre fertile estimée', 'fertile']);
   }
@@ -247,6 +247,7 @@ function statusList(d) {
 }
 
 const label = (list, id) => list.find((x) => String(x.id) === String(id))?.label ?? id;
+const MUCUS_DEFAULT_HINT = 'La glaire la plus fertile (aqueuse, blanc d’œuf) annonce l’ovulation : Lune repère le « jour pic » quand elle redevient moins fertile 3 jours de suite.';
 
 function loggedChips(e) {
   if (!e) return '';
@@ -258,12 +259,12 @@ function loggedChips(e) {
   });
   (e.symptoms || []).forEach((s) => out.push([label(C.SYMPTOMS, s), 'sym']));
   if (e.energy) out.push([`Énergie ${label(C.ENERGY, e.energy).toLowerCase()}`, '']);
-  if (e.mucus) out.push([`Glaire ${label(C.MUCUS, e.mucus).toLowerCase()}`, ['watery', 'eggwhite'].includes(e.mucus) ? 'fertile' : '']);
+  if (e.mucus) out.push([e.mucus === 'nothing' ? 'Rien vu, rien senti' : `Glaire ${label(C.MUCUS, e.mucus).toLowerCase()}`, ['watery', 'eggwhite'].includes(e.mucus) ? 'fertile' : '']);
   if (e.sex) out.push([`Rapport ${label(C.SEX, e.sex).toLowerCase()}`, '']);
   if (e.ovuTest) out.push([`Test LH ${label(C.TESTS, e.ovuTest).toLowerCase()}`, e.ovuTest === 'positive' ? 'fertile' : '']);
   if (e.pregTest) out.push([`Test de grossesse ${label(C.TESTS, e.pregTest).toLowerCase()}`, '']);
   if (e.pill) out.push(['Pilule prise', '']);
-  if (e.temp != null) out.push([`${num(e.temp, 2)} °C`, '']);
+  if (e.temp != null) out.push([`${num(e.temp, 2)} °C${e.tempExcluded ? ' (exclue)' : ''}`, '']);
   if (e.weight != null) out.push([`${num(e.weight, 1)} kg`, '']);
   if (e.note) out.push(['Note', '']);
   return out.map(([t, tone]) => `<span class="pill ${tone}">${esc(t)}</span>`).join('');
@@ -506,29 +507,60 @@ function upcomingWindow(p, t) {
 
 // Volontairement, cette carte n'affiche JAMAIS de niveau « faible » : une estimation calendaire
 // ne permet pas de dire quand une grossesse est impossible (pas de « jours sûrs »).
+const OVU_STATUS = { confirmed: 'Ovulation confirmée', probable: 'Ovulation probable' };
+const OVU_SOURCE = { bbt: 'grâce à ta température', mucus: 'grâce à ta glaire (jour pic)', lh: 'd’après ton test LH' };
+
+/** Résumé des signes observés pendant le cycle en cours (glaire, température, tests LH). */
+function signalsList(p) {
+  const s = p.current.signals;
+  const rows = [];
+  if (s.mucusPeak) rows.push(['Glaire', `jour pic le ${fShort(s.mucusPeak)}`]);
+  else if (s.mucusPending) rows.push(['Glaire', `pic possible le ${fShort(s.mucusPending)}, confirmé si elle est moins fertile 3 jours de suite`]);
+  else if (s.mucusOpen) rows.push(['Glaire', `fertile depuis le ${fShort(s.mucusOpen)}`]);
+  const excl = s.tempExcluded ? ` · ${s.tempExcluded} relevé${s.tempExcluded > 1 ? 's' : ''} exclu${s.tempExcluded > 1 ? 's' : ''}` : '';
+  if (s.tempShift) rows.push(['Température', `montée détectée le ${fShort(s.tempShift)}${s.tempRule !== 'main' ? ' (montée lente, règle d’exception)' : ''}${excl}`]);
+  else if (s.tempReadings > 0) rows.push(['Température', `${s.tempReadings < 6 ? `${s.tempReadings} relevé${s.tempReadings > 1 ? 's' : ''} : il en faut au moins 6 avant la montée` : 'pas encore de montée'}${excl}`]);
+  if (s.lhStatus) {
+    const d = fShort(s.lhDate);
+    const txt = {
+      confirmed: `positif le ${d}, confirmé par un autre signe`,
+      pending: `positif le ${d} : ovulation probable dans 1 à 2 jours`,
+      alone: p.mode.irregular ? `positif le ${d} : pas retenu seul quand les cycles varient (faux pics fréquents)` : `positif le ${d}`,
+      unconfirmed: `positif le ${d}, non confirmé par la température ou la glaire`,
+      multiple: 'plusieurs pics : aucun n’est retenu sans confirmation par la température ou la glaire',
+    }[s.lhStatus];
+    rows.push(['Test LH', txt]);
+  }
+  if (!rows.length) return '';
+  return `<div class="signals">${rows.map(([k, v]) => `<div class="sig-row"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('')}</div>`;
+}
+
 function fertilityCard(p, t) {
   if (!showFert()) return '';
   const c = p.current;
   const goal = state.settings.goal;
   const observed = c.ovulationSource !== 'predicted';
-  const protect = goal === 'conceive' ? '' : `<p class="hint">${goal === 'avoid' ? '<b>Lune ne protège pas d’une grossesse.</b> ' : ''}Une grossesse reste possible à tout moment du cycle quand l’ovulation n’est pas observée.</p>`;
-  if (!p.mode.predictions && !observed) return '';
-  // Cycles variables : pas de fenêtre calculée d'après le calendrier, seulement les observations.
-  if (p.mode.irregular && !observed) {
-    return `
+  const signals = signalsList(p);
+  const protect = goal === 'conceive' ? '' : `<p class="hint">${goal === 'avoid' ? '<b>Lune ne protège pas d’une grossesse.</b> ' : ''}Une grossesse reste possible à tout moment du cycle ; ces observations ne remplacent pas une contraception.</p>`;
+  const card = (pill, line) => `
       <section class="card">
-        <div class="card-head"><h2>Fertilité</h2><span class="pill">Non estimée</span></div>
-        <p class="muted small">Tes cycles varient : Lune ne peut pas situer l’ovulation d’après le calendrier. Note ta glaire cervicale, tes tests d’ovulation (LH) ou ta température : Lune signalera l’ovulation quand elle sera observée.</p>
+        <div class="card-head"><h2>Fertilité</h2>${pill}</div>
+        ${line ? `<p class="muted small">${line}</p>` : ''}
+        ${signals}
         ${protect}
       </section>`;
+
+  // 1. Signes observés : ils priment toujours sur le calendrier.
+  if (observed && c.ovulation <= t) {
+    const conf = c.ovulationStatus === 'confirmed' ? ', confirmée par un second signe' : '';
+    return card(`<span class="pill fertile">${OVU_STATUS[c.ovulationStatus] || 'Ovulation observée'}</span>`, `Ovulation vers le ${fShort(c.ovulation)}, repérée ${OVU_SOURCE[c.ovulationSource]}${conf}`);
   }
-  if (p.mode.irregular && observed && c.ovulation <= t) {
-    return `
-      <section class="card">
-        <div class="card-head"><h2>Fertilité</h2><span class="pill fertile">Ovulation observée</span></div>
-        <p class="muted small">Ovulation ${c.ovulationSource === 'bbt' ? 'repérée après coup grâce à ta température' : 'signalée par un test LH'}, vers le ${fShort(c.ovulation)}</p>
-        ${protect}
-      </section>`;
+  if (observed) return card('<span class="pill fertile">Ovulation proche</span>', `Ton test LH annonce une ovulation probable vers le ${fShort(c.ovulation)}`);
+  if (c.fertileObservedFrom) return card('<span class="pill fertile">Fenêtre ouverte</span>', `Ta glaire indique une période fertile depuis le ${fShort(c.fertileObservedFrom)}`);
+  if (!p.mode.predictions) return signals ? card('<span class="pill">Observations</span>', '') : '';
+  // 2. Cycles variables : pas de fenêtre calculée d'après le calendrier.
+  if (p.mode.irregular) {
+    return card('<span class="pill">Non estimée</span>', 'Tes cycles varient : Lune ne peut pas situer l’ovulation d’après le calendrier. Note ta glaire cervicale, tes tests d’ovulation (LH) ou ta température : Lune signalera l’ovulation quand elle sera observée.');
   }
   const w = upcomingWindow(p, t);
   const inWin = !p.late && t >= w.s && t <= w.e;
@@ -552,6 +584,7 @@ function fertilityCard(p, t) {
     <section class="card">
       <div class="card-head"><h2>Fertilité</h2>${pill}</div>
       <p class="muted small">${line}</p>
+      ${signals}
       <p class="hint">${note}</p>
     </section>`;
 }
@@ -619,9 +652,12 @@ function upcomingCard(p, t) {
   }
   const f1 = p.future[1];
   if (f1 && !irregular) rows.push(kvRow('predicted', 'Règles suivantes', fShortW(f1.periodStart), rel(E.diffDays(t, f1.periodStart))));
-  const foot = irregular
+  const fromOvu = p.current.ovulationSource !== 'predicted'
+    ? ` Calculées d’après ton ovulation du ${fShort(p.current.ovulation)} et ta phase lutéale (${p.luteal.length} j).`
+    : '';
+  const foot = (irregular
     ? 'Tes cycles varient : Lune affiche la plage où tes règles arrivent environ 8 fois sur 10, recalculée chaque jour.'
-    : `Confiance ${CONFIDENCE[f.confidence]} · la plage indique où tes règles arrivent environ 8 fois sur 10.`;
+    : `Confiance ${CONFIDENCE[f.confidence]} · la plage indique où tes règles arrivent environ 8 fois sur 10.`) + fromOvu;
   return `
     <section class="card">
       <div class="card-head"><h2>À venir</h2><button class="card-link" data-action="tab" data-tab="calendar">Calendrier</button></div>
@@ -892,7 +928,7 @@ function sheetBody(key) {
     <section class="log-section" data-group>
       <h3>Glaire cervicale <span class="faint">Pertes</span></h3>
       <div class="chips">${chipGroup('mucus', C.MUCUS, 'single', (o) => (['watery', 'eggwhite'].includes(o.id) ? 'fertile' : 'neutral'), e)}</div>
-      <p class="hint" id="mucus-hint">${mucusHint ? esc(mucusHint) : 'Son aspect change au fil du cycle et aide à repérer l’ovulation.'}</p>
+      <p class="hint" id="mucus-hint">${mucusHint ? esc(mucusHint) : MUCUS_DEFAULT_HINT}</p>
     </section>`;
 
   const sex = `
@@ -927,6 +963,9 @@ function sheetBody(key) {
         <button class="icon-btn flat" data-action="measure-step" data-field="temp" data-step="0.05" aria-label="Augmenter">+</button>
       </div>
       <p class="hint">Prends-la au réveil, avant de te lever, à la même heure chaque jour. Une hausse durable confirme l'ovulation.</p>
+      <div class="log-sub">Relevé inhabituel ?</div>
+      <div class="chips" data-group>${chipGroup('tempExcluded', C.TEMP_EXCLUDE, 'single', 'neutral', e)}</div>
+      <p class="hint">Un relevé exclu reste visible mais n’est pas utilisé pour repérer l’ovulation.</p>
     </section>`;
 
   const weight = `
@@ -964,7 +1003,7 @@ function updateSheetAfterLog() {
   const sub = $('#sheet-sub');
   if (sub) sub.textContent = sheetSub(key);
   const hint = $('#mucus-hint');
-  if (hint) hint.textContent = C.MUCUS.find((m) => m.id === e.mucus)?.hint || 'Son aspect change au fil du cycle et aide à repérer l’ovulation.';
+  if (hint) hint.textContent = C.MUCUS.find((m) => m.id === e.mucus)?.hint || MUCUS_DEFAULT_HINT;
   // Ne met à jour que l'emplacement du bouton : reconstruire la feuille fermerait le clavier
   const slot = $('#sheet-clear');
   if (slot && !!slot.firstElementChild !== !!Object.keys(e).length) slot.innerHTML = clearBtn(key, e);
@@ -1176,7 +1215,7 @@ function tempSection(t) {
   if (!pred.hasData) return '';
   const c = pred.current;
   const bc = E.bbtChart(state, c.start, t);
-  if (bc.points.length < 2) {
+  if (bc.points.length + bc.excluded.length < 2) {
     return `
       <h2 class="section-title">Température basale</h2>
       <section class="card"><p class="muted small">Note ta température chaque matin dans ton journal : la courbe de ton cycle s'affichera ici et Lune repérera la hausse qui suit l'ovulation.</p></section>`;
@@ -1184,14 +1223,18 @@ function tempSection(t) {
   return `
     <h2 class="section-title">Température basale · cycle en cours</h2>
     <section class="card">${tempChart(bc, pred.cycleLength)}
-      ${bc.ovulation ? `<p class="hint">Hausse détectée : ovulation estimée le ${fShort(bc.ovulation)}</p>` : '<p class="hint">Après l’ovulation, la température monte d’environ 0,2 à 0,5 °C et reste haute jusqu’aux règles.</p>'}
+      ${bc.ovulation
+        ? `<p class="hint">Hausse détectée${bc.rule !== 'main' ? ' (montée lente, règle d’exception)' : ''} : ovulation estimée le ${fShort(bc.ovulation)}</p>`
+        : '<p class="hint">Après l’ovulation, la température monte d’environ 0,2 à 0,5 °C et reste haute jusqu’aux règles.</p>'}
+      ${bc.excluded.length ? `<p class="hint">Les points gris sont des relevés exclus (alcool, fièvre, nuit courte…) : ils ne servent pas à repérer l’ovulation.</p>` : ''}
     </section>`;
 }
 
 function tempChart(bc, cycleLen) {
   const W = 340, H = 180, L = 34, R = 10, T = 14, B = 24;
   const pts = bc.points;
-  const temps = pts.map((p) => p.temp);
+  const excl = bc.excluded || [];
+  const temps = [...pts, ...excl].map((p) => p.temp);
   let lo = Math.min(...temps) - 0.1;
   let hi = Math.max(...temps) + 0.1;
   if (hi - lo < 0.5) { const m = (hi + lo) / 2; lo = m - 0.25; hi = m + 0.25; }
@@ -1215,7 +1258,8 @@ function tempChart(bc, cycleLen) {
   }
   const line = pts.map((p) => `${x(p.cycleDay).toFixed(1)},${y(p.temp).toFixed(1)}`).join(' ');
   const dots = pts.map((p) => `<circle cx="${x(p.cycleDay).toFixed(1)}" cy="${y(p.temp).toFixed(1)}" r="3.2" style="fill:var(--surface);stroke:var(--mood);stroke-width:2"/>`).join('');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de température">${g}<polyline points="${line}" style="fill:none;stroke:var(--mood);stroke-width:2;stroke-linejoin:round"/>${dots}</svg>`;
+  const exDots = excl.map((p) => `<circle cx="${x(p.cycleDay).toFixed(1)}" cy="${y(p.temp).toFixed(1)}" r="3.2" style="fill:var(--surface);stroke:var(--text-3);stroke-width:1.5;stroke-dasharray:2 1.5"/>`).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de température">${g}<polyline points="${line}" style="fill:none;stroke:var(--mood);stroke-width:2;stroke-linejoin:round"/>${dots}${exDots}</svg>`;
 }
 
 function feelingsSection(t) {
@@ -1262,11 +1306,33 @@ function historySection(st, t) {
   if (pred.hasData) {
     rows.push(`<div class="history-row"><span>Depuis le ${fShort(pred.current.start)}</span><span class="h-len">en cours · ${nDays(pred.current.day)}</span></div>`);
   }
+  const ovuOf = new Map((pred.pastOvulations || []).map((o) => [o.start, o]));
+  const OVU_TAG = { confirmed: 'ovulation confirmée', probable: 'ovulation probable', notDetected: 'aucune montée de température détectée' };
   st.cycles.slice().reverse().forEach((c) => {
-    const tag = c.suspect ? ' · à confirmer (règles non notées ?)' : c.confirmedLong ? ' · cycle long confirmé' : '';
-    rows.push(`<div class="history-row"><span>${fShort(c.start)} → ${fShort(c.end)}<br><span class="small muted">Règles : ${nDays(c.periodLength)}${tag}</span></span><span class="h-len">${nDays(c.length)}</span></div>`);
+    const tags = [];
+    if (c.suspect) tags.push('à confirmer (règles non notées ?)');
+    else if (c.confirmedLong) tags.push('cycle long confirmé');
+    const o = ovuOf.get(c.start);
+    if (o && OVU_TAG[o.status]) tags.push(o.ovulation ? `${OVU_TAG[o.status]} le ${fShort(o.ovulation)}` : OVU_TAG[o.status]);
+    rows.push(`<div class="history-row"><span>${fShort(c.start)} → ${fShort(c.end)}<br><span class="small muted">Règles : ${nDays(c.periodLength)}${tags.map((x) => ` · ${x}`).join('')}</span></span><span class="h-len">${nDays(c.length)}</span></div>`);
   });
-  return `<h2 class="section-title">Historique</h2><section class="card" style="padding-top:6px;padding-bottom:6px"><div class="history">${rows.join('')}</div></section>`;
+  return `${lutealSection()}<h2 class="section-title">Historique</h2><section class="card" style="padding-top:6px;padding-bottom:6px"><div class="history">${rows.join('')}</div></section>`;
+}
+
+/** Phase lutéale apprise sur les cycles où l'ovulation a été observée. */
+function lutealSection() {
+  const l = pred.luteal;
+  if (!pred.hasData || !l || !l.n) return '';
+  const notes = [];
+  if (l.repeatedShort) notes.push('Plusieurs phases lutéales de 10 jours ou moins : c’est un point à évoquer avec un·e professionnel·le si tu essaies de concevoir.');
+  else if (l.lastShort) notes.push('Ta dernière phase lutéale a été courte (10 jours ou moins). C’est fréquent sur un cycle isolé et rarement répété : elle n’est pas prise en compte dans la moyenne.');
+  return `
+    <h2 class="section-title">Phase lutéale</h2>
+    <section class="card">
+      <div class="card-head" style="margin-bottom:6px"><h2>${l.length} jours</h2><span class="pill">${l.n} cycle${l.n > 1 ? 's' : ''} observé${l.n > 1 ? 's' : ''}</span></div>
+      <p class="muted small">Durée entre ton ovulation et tes règles, apprise sur tes cycles où l’ovulation a été repérée (température, glaire ou test LH). Lune s’en sert pour annoncer tes règles une fois l’ovulation observée.</p>
+      ${notes.map((n) => `<p class="hint">${n}</p>`).join('')}
+    </section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,7 +1512,7 @@ async function exportCSV() {
   const keys = Object.keys(state.days).sort();
   if (!keys.length) { toast('Aucune donnée à exporter.'); return; }
   const map = E.calendarMap(state, keys[0], keys[keys.length - 1], today());
-  const lists = { flow: C.FLOW, moods: C.MOODS, symptoms: C.SYMPTOMS, energy: C.ENERGY, mucus: C.MUCUS, sex: C.SEX, ovuTest: C.TESTS, pregTest: C.TESTS };
+  const lists = { flow: C.FLOW, moods: C.MOODS, symptoms: C.SYMPTOMS, energy: C.ENERGY, mucus: C.MUCUS, sex: C.SEX, ovuTest: C.TESTS, pregTest: C.TESTS, tempExcluded: C.TEMP_EXCLUDE };
   const csv = S.exportCSV(state, (k) => map[k]?.cycleDay, (f, v) => (lists[f] ? label(lists[f], v) : v));
   await S.shareFile(`lune-export-${today()}.csv`, 'text/csv', csv);
 }
