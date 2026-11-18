@@ -74,6 +74,14 @@ const CLINICAL_SHORT = 21;
 const CLINICAL_LONG = 35;
 const CLINICAL_VERY_LONG = 90;
 const CLINICAL_MIN_PER_YEAR = 8;
+const CLINICAL_LONG_PERIOD = 8;
+/** Après une remise à zéro (accouchement, arrêt de contraception), nombre de cycles avant de revenir au mode normal. */
+const CONTEXT_RESET_CYCLES = 3;
+/** Test rétrospectif : cycles examinés, seuil de fiabilité, lissage exponentiel, élargissement maximal. */
+const BACKTEST_WINDOW = 24;
+const BACKTEST_MIN = 6;
+const EWMA_ALPHA = 0.3;
+const CALIBRATION_MAX = 2.5;
 const IRREGULAR_MODES = ['auto', 'on', 'off'];
 /** Durée de règles au-delà de laquelle l'échantillon est ignoré (saisie aberrante). */
 const MAX_PERIOD_SAMPLE = 10;
@@ -210,6 +218,18 @@ function studentCDF(t, nu) {
   return t > 0 ? 1 - tail : tail;
 }
 
+/** Quantile de la loi de Student (recherche par dichotomie). */
+function studentQuantile(p, nu) {
+  let lo = -60;
+  let hi = 60;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (studentCDF(mid, nu) < p) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
 /**
  * Loi discrète de la durée L du cycle en cours (jours entiers), sachant L ≥ minL
  * (« chaque jour sans règles est une information »). Renvoie [[L, probabilité], …].
@@ -323,6 +343,17 @@ function normalizeSettings(settings) {
   out.irregularMode = IRREGULAR_MODES.includes(src.irregularMode) ? src.irregularMode : 'auto';
   // Prévisions affichées (false : Lune ne montre que l'historique et les observations).
   out.showPredictions = src.showPredictions !== false;
+  // Situation signalée par l'utilisatrice (jamais déduite) : elle adapte les prévisions.
+  const ctx = src.context && typeof src.context === 'object' ? src.context : {};
+  const ctxDate = (k) => (typeof k === 'string' && KEY_RE.test(k) ? normKey(k) : null);
+  out.context = {
+    pcos: ctx.pcos === true,
+    perimenopause: ctx.perimenopause === true,
+    sport: ctx.sport === true,
+    breastfeeding: ctx.breastfeeding === true,
+    birthDate: ctxDate(ctx.birthDate),
+    contraceptionStop: ctxDate(ctx.contraceptionStop),
+  };
   // Débuts de cycles longs confirmés par l'utilisatrice (« ce n'était pas un oubli »).
   out.longCycles = new Set(
     (Array.isArray(src.longCycles) ? src.longCycles : []).filter((k) => typeof k === 'string' && KEY_RE.test(k)).map(normKey),
@@ -509,9 +540,65 @@ function annotateCycles(cycles, settings) {
   });
 }
 
+/** Date à partir de laquelle l'historique repart de zéro (accouchement, arrêt de contraception), ou null. */
+function contextResetFrom(ctx) {
+  return [ctx.birthDate, ctx.contraceptionStop].filter(Boolean).sort().pop() || null;
+}
+
+/**
+ * Test rétrospectif (« back-test ») sur l'historique de l'utilisatrice : chaque cycle passé est
+ * prédit à partir des seuls cycles précédents, puis comparé à la réalité. Compare la méthode de
+ * Lune (bayésienne) à trois méthodes simples, mesure la couverture de la plage à 80 % et en tire
+ * un facteur d'élargissement des plages (jamais de rétrécissement).
+ */
+function runBacktest(countedCycles, settings) {
+  const cycles = countedCycles.slice(-BACKTEST_WINDOW);
+  const errs = { bayes: [], mean6: [], median6: [], weighted: [] };
+  const ratios = [];
+  let covered = 0;
+  for (let i = 1; i < cycles.length; i++) {
+    const prior = cycles.slice(0, i);
+    const actual = cycles[i].length;
+    const m = cycleModel(prior, settings);
+    const half = studentQuantile(0.9, m.nu) * m.scale;
+    const err = Math.abs(actual - Math.round(m.mu));
+    errs.bayes.push(err);
+    if (Math.abs(actual - m.mu) <= half + 0.5) covered++;
+    ratios.push(Math.abs(actual - m.mu) / half);
+    const last6 = prior.slice(-STATS_WINDOW).map((c) => c.length);
+    errs.mean6.push(Math.abs(actual - Math.round(mean(last6))));
+    errs.median6.push(Math.abs(actual - Math.round(median(last6))));
+    let ewma = prior[0].length;
+    for (const c of prior.slice(1)) ewma = EWMA_ALPHA * c.length + (1 - EWMA_ALPHA) * ewma;
+    errs.weighted.push(Math.abs(actual - Math.round(ewma)));
+  }
+  const n = errs.bayes.length;
+  const share = (arr, lim) => Math.round((arr.filter((e) => e <= lim).length / arr.length) * 100) / 100;
+  const summary = (arr) => (arr.length ? { mae: round1(mean(arr)), median: round1(median(arr)), within2: share(arr, 2), within3: share(arr, 3) } : null);
+  const sorted = [...ratios].sort((a, b) => a - b);
+  const q80 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(0.8 * sorted.length) - 1)] : 1;
+  return {
+    n,
+    reliable: n >= BACKTEST_MIN,
+    bayes: summary(errs.bayes),
+    mean6: summary(errs.mean6),
+    median6: summary(errs.median6),
+    weighted: summary(errs.weighted),
+    coverage: n ? Math.round((covered / n) * 100) / 100 : null,
+    calibration: n >= BACKTEST_MIN ? round1(clamp(q80, 1, CALIBRATION_MAX)) : 1,
+  };
+}
+
 function computeStats(days, settings, today) {
   const periods = detectPeriods(days);
-  const cycles = annotateCycles(computeCycles(periods), settings);
+  const ctx = settings.context;
+  const resetFrom = contextResetFrom(ctx);
+  // Après un accouchement ou l'arrêt d'une contraception, les cycles d'avant ne représentent
+  // plus le cycle actuel : ils restent visibles mais ne comptent plus.
+  const cycles = annotateCycles(computeCycles(periods), settings).map((c) => {
+    const beforeReset = !!resetFrom && c.start < resetFrom;
+    return beforeReset ? { ...c, beforeReset, counted: false, suspect: false } : { ...c, beforeReset };
+  });
 
   // ── Cycles ──
   const countedCycles = cycles.filter((c) => c.counted);
@@ -555,11 +642,42 @@ function computeStats(days, settings, today) {
   if (last6.filter((c) => c.length > CLINICAL_LONG).length >= 2) clinicalFlags.push('long');
   if (today && countedCycles.some((c) => c.length >= CLINICAL_VERY_LONG && diffDays(c.end, today) <= 365)) clinicalFlags.push('veryLong');
   const hasSuspect = cycles.some((c) => c.suspect);
-  if (today && !hasSuspect && periods.length && diffDays(periods[0].start, today) >= 365) {
+  const trackedFrom = resetFrom && periods.length && periods[0].start < resetFrom ? resetFrom : periods.length ? periods[0].start : null;
+  if (today && !hasSuspect && trackedFrom && diffDays(trackedFrom, today) >= 365) {
     const yearAgo = addDays(today, -365);
     const inLastYear = periods.filter((p) => p.start > yearAgo && p.start <= today).length;
     if (inLastYear < CLINICAL_MIN_PER_YEAR) clinicalFlags.push('infrequent');
   }
+  // Règles longues (> 8 jours) au moins 2 fois parmi les 6 dernières (FIGO, NHS).
+  const ongoingP = today ? findOngoingPeriod(periods, today) : null;
+  const lastPeriods = periods.filter((p) => p !== ongoingP && (!resetFrom || p.start >= resetFrom)).slice(-STATS_WINDOW);
+  if (lastPeriods.filter((p) => p.length > CLINICAL_LONG_PERIOD).length >= 2) clinicalFlags.push('longPeriods');
+  // Saignements entre les règles et douleurs intenses, dans au moins 2 des 6 derniers cycles.
+  let spottingCycles = 0;
+  let painCycles = 0;
+  for (const c of last6) {
+    let spot = false;
+    let pain = false;
+    for (const k of rangeKeys(c.start, c.end)) {
+      const e = entryOf(days, k);
+      if (!e) continue;
+      const inside = diffDays(c.start, k) > c.periodLength + 1 && diffDays(k, c.end) > 1;
+      if (inside && (e.flow === 'spotting' || isPeriodFlow(e.flow))) spot = true;
+      if (Array.isArray(e.symptoms) && e.symptoms.includes('severepain')) pain = true;
+    }
+    if (spot) spottingCycles++;
+    if (pain) painCycles++;
+  }
+  if (spottingCycles >= 2) clinicalFlags.push('spotting');
+  if (painCycles >= 2) clinicalFlags.push('pain');
+  // Alertes en pause pendant l'allaitement et l'année qui suit un accouchement.
+  const alertsPaused = ctx.breastfeeding || (!!ctx.birthDate && !!today && diffDays(ctx.birthDate, today) < 365);
+
+  // Situations signalées : plages larges et pas de fenêtre calendaire, jusqu'à 3 cycles après une remise à zéro.
+  const contextIrregular = ctx.pcos || ctx.perimenopause || ctx.sport || (!!resetFrom && countedCycles.length < CONTEXT_RESET_CYCLES);
+  const backtest = runBacktest(countedCycles, settings);
+  const model = cycleModel(countedCycles, settings);
+  model.scale *= backtest.calibration;
 
   let source = 'history';
   if (cycleCount === 0) source = 'settings';
@@ -593,7 +711,10 @@ function computeStats(days, settings, today) {
     suspectCycles: cycles.filter((c) => c.suspect),
     medianCLD,
     clinicalFlags,
-    model: cycleModel(countedCycles, settings),
+    alertsPaused,
+    model,
+    backtest,
+    context: { resetFrom, cyclesSinceReset: resetFrom ? countedCycles.length : null, irregular: contextIrregular },
   };
 }
 
@@ -862,6 +983,14 @@ function buildModel(state, todayArg) {
   if (pastPeriods.length === 0) {
     return { days, settings, today, stats, pastPeriods, pastWindows, prediction: { hasData: false, today, stats } };
   }
+  // Après un accouchement, aucune prévision avant le retour des règles (l'ovulation peut le précéder).
+  const birth = settings.context.birthDate;
+  if (birth && birth <= today && !pastPeriods.some((p) => p.start > birth)) {
+    return {
+      days, settings, today, stats, pastPeriods, pastWindows,
+      prediction: { hasData: false, today, stats, waiting: 'postpartum', since: birth, breastfeeding: settings.context.breastfeeding },
+    };
+  }
 
   const lutealLength = settings.lutealLength;
   // Durée attendue : moyenne a posteriori du modèle bayésien (la durée déclarée sert d'a priori).
@@ -869,7 +998,8 @@ function buildModel(state, todayArg) {
   const periodLength = stats.avgPeriod;
   const ovuDay = predictedOvulationDay(cycleLength, lutealLength);
   // Mode « cycles irréguliers » : pas de fenêtre fertile calendaire ni de dates futures précises.
-  const irregular = settings.irregularMode === 'on' || (settings.irregularMode === 'auto' && stats.regularity === 'irregular');
+  const irregular =
+    settings.irregularMode === 'on' || (settings.irregularMode === 'auto' && (stats.regularity === 'irregular' || stats.context.irregular));
   const predictionsOn = settings.showPredictions;
 
   // ── Cycle en cours ──
@@ -996,6 +1126,11 @@ function buildModel(state, todayArg) {
 
   // ── Cycle en cours anormalement long : règles peut-être non notées ? ──
   const askMissedPeriod = day > suspectThreshold(stats.referenceCycle) && !settings.longCycles.has(start);
+  // Test de grossesse positif noté pendant le cycle en cours : alertes et messages de dépassement en pause.
+  const pregnancyPositive = rangeKeys(start, today).some((k) => {
+    const e = entryOf(days, k);
+    return !!e && e.pregTest === 'positive';
+  });
 
   const prediction = {
     hasData: true,
@@ -1018,6 +1153,7 @@ function buildModel(state, todayArg) {
     // Dépasse la plage habituelle (90e centile de la loi non conditionnée).
     beyondUsual: today > forecast.usualTo,
     mode: { irregular, predictions: predictionsOn },
+    pregnancyPositive,
     // Phase lutéale personnelle : { length, n, values, lastShort, repeatedShort }
     luteal,
     // Ovulation de chaque cycle terminé : { start, end, ovulation, source, status, luteal }

@@ -108,6 +108,21 @@ Si vos cycles varient de plus de 9 jours, Lune passe automatiquement en **mode c
 
 Vous pouvez aussi **masquer toutes les prévisions** (Réglages → Prévisions) : Lune ne montre alors que l'historique et vos observations.
 
+### Ma situation
+Dans **Réglages → Ma situation**, vous pouvez signaler plusieurs situations : SOPK (désormais SMOP), périménopause, sport intensif ou perte de poids, accouchement récent (avec ou sans allaitement), arrêt d'une contraception hormonale. Ces informations restent sur votre téléphone et Lune ne pose jamais de diagnostic.
+- **Effet général** : Lune affiche des plages larges et ne calcule plus la fenêtre fertile d'après le calendrier.
+- **Après un accouchement** : Lune ne prévoit rien avant le retour des règles. Elle rappelle qu'une grossesse est possible avant les premières règles et, si vous allaitez, à quelles conditions l'allaitement protège.
+- **Après un accouchement ou l'arrêt d'une contraception** : les cycles d'avant ne comptent plus dans les prévisions, et le mode cycles irréguliers reste actif pendant 3 cycles. Si vous passez d'une contraception hormonale à « Aucune », la date d'arrêt est notée automatiquement.
+- **Test de grossesse positif** : les alertes et les messages sur le cycle sont mis en pause.
+
+### Bilan : précision et résumé pour un rendez-vous
+- **Précision de vos prévisions** : Lune refait la prévision de chacun de vos cycles passés à partir des seuls cycles d'avant, puis la compare à la réalité.
+  - Elle affiche l'erreur médiane, la part de prévisions justes à ± 3 jours, et la part de cas où la vraie date tombait dans la plage annoncée.
+  - Elle compare sa méthode à trois autres : moyenne des 6 derniers cycles, médiane, moyenne pondérée.
+  - Si ses plages se sont révélées trop étroites, elle les élargit automatiquement.
+  - L'indice devient fiable à partir de 6 à 9 cycles.
+- **Résumé pour un rendez-vous** (Réglages → Sauvegarde, ou depuis le Bilan) : une page des 12 derniers mois à imprimer ou à enregistrer en PDF. Elle contient les cycles et leur durée, les ovulations observées, les points relevés et les symptômes les plus notés.
+
 ### Bilan
 Vos statistiques apparaissent après votre **premier cycle complet**, c'est-à-dire au début de vos règles suivantes. Elles deviennent plus fiables au bout de 3 cycles.
 
@@ -148,11 +163,16 @@ Les calculs sont simples et transparents :
   - À partir de 36 jours, elle indique que le cycle est plus long que d'habitude.
   - À partir de 90 jours, elle suggère d'en parler à un·e professionnel·le de santé, comme le recommandent les guides internationaux.
 - **Régularité** : les cycles sont dits « variables » si l'écart entre le plus court et le plus long de vos 6 derniers cycles dépasse 9 jours (seuil FIGO quand l'âge n'est pas connu), ou si l'écart médian entre deux cycles consécutifs dépasse 9 jours.
-- **À évoquer avec un·e professionnel·le** : le Bilan le signale, sans jamais poser de diagnostic, dans ces cas tirés des recommandations internationales :
+- **À évoquer avec un·e professionnel·le** : Lune relève ces cas, tirés des recommandations internationales, sans jamais poser de diagnostic :
   - au moins 2 des 6 derniers cycles de moins de 21 jours ;
   - au moins 2 des 6 derniers cycles de plus de 35 jours ;
   - un cycle de 90 jours ou plus dans l'année ;
-  - moins de 8 règles en 12 mois.
+  - moins de 8 règles en 12 mois ;
+  - au moins 2 des 6 dernières règles de plus de 8 jours ;
+  - des saignements entre les règles dans au moins 2 cycles ;
+  - des « douleurs intenses » notées dans au moins 2 cycles.
+
+  Comme dans Apple Santé, Lune vous demande d'abord si votre historique est complet. Le point n'apparaît dans le Bilan qu'après votre confirmation, et vous pouvez choisir de ne plus le voir. Les alertes sont en pause sous contraception hormonale, pendant l'allaitement, dans l'année qui suit un accouchement et après un test de grossesse positif.
 
 ---
 

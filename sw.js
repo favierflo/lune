@@ -8,7 +8,7 @@
  *    (Vos données personnelles ne sont PAS dans ce cache : changer la
  *    version ne les efface pas.)
  */
-const VERSION = 'lune-v4';
+const VERSION = 'lune-v5';
 
 // Préfixe commun à tous les caches de Lune (sert au nettoyage des anciennes versions).
 const CACHE_PREFIX = 'lune-';

@@ -285,6 +285,23 @@ function viewToday() {
       <button class="icon-btn accent" data-action="open-day" data-key="${t}" aria-label="Noter ma journée">${I.plus}</button>
     </header>`;
 
+  if (!p.hasData && p.waiting === 'postpartum') {
+    const lam = p.breastfeeding
+      ? '<p class="hint">L’allaitement ne protège d’une grossesse (environ 98 %) que si trois conditions sont réunies : pas de retour des règles, allaitement complet ou presque, bébé de moins de 6 mois.</p>'
+      : '';
+    return `${head}${weekStrip(t)}
+      <div class="stack">
+        <section class="card empty">
+          <div class="ill">${I.heart.replace('width="20" height="20"', 'width="72" height="72"')}</div>
+          <h2>Depuis ton accouchement</h2>
+          <p>Accouchement le ${fFull(p.since)}. Lune attend le retour de tes règles pour reprendre ses prévisions.</p>
+          <div class="hero-actions"><button class="btn btn-primary btn-block" data-action="period-today">${I.drop} Mes règles sont revenues</button></div>
+        </section>
+        <div class="notice period"><span class="ico">${I.info}</span><div><p><b>Une grossesse est possible avant les premières règles</b> : l’ovulation peut revenir avant elles.</p>${lam}</div></div>
+        ${journalCard(t)}
+      </div>${disclaimer()}`;
+  }
+
   if (!p.hasData) {
     return `${head}${weekStrip(t)}
       <div class="stack">
@@ -332,6 +349,18 @@ const LONG_CYCLE_NOTE = 36;
 const LONG_CYCLE_CONSULT = 90;
 const PREG_TEST = ' Si une grossesse est possible, un test urinaire est généralement fiable dès le jour où les règles étaient attendues.';
 
+/** Alertes en pause : contraception hormonale, post-partum/allaitement, test de grossesse positif. */
+function alertsAllowed(p) {
+  return !hormonal() && !p.stats.alertsPaused && !p.pregnancyPositive;
+}
+
+/** Première alerte détectée que l'utilisatrice n'a ni confirmée ni masquée. */
+function pendingAlert(p) {
+  if (!p.hasData || !alertsAllowed(p)) return null;
+  const done = new Set([...(state.settings.alertsConfirmed || []), ...(state.settings.alertsDismissed || [])]);
+  return p.stats.clinicalFlags.find((f) => CLINICAL_TEXT[f] && !done.has(f)) || null;
+}
+
 function missedQuestion(text, yesKey, noKey, noLabel) {
   return `<div class="notice"><span class="ico">${I.calendar.replace('width="26" height="26"', 'width="20" height="20"')}</span><div><p>${text}</p>
     <div class="notice-actions"><button data-action="missed-yes" data-key="${yesKey}">Oui, je les ajoute</button><button data-action="missed-no" data-key="${noKey}" style="color:var(--text-2)">${noLabel}</button></div></div></div>`;
@@ -342,10 +371,15 @@ function notices(p, t) {
   const c = p.current;
   const preg = hormonal() ? '' : PREG_TEST;
 
-  // Cycle en cours bien plus long que d'habitude : on demande, on ne suppose pas d'erreur.
-  if (p.askMissedPeriod) {
+  let asked = false;
+  if (p.pregnancyPositive) {
+    // Test de grossesse positif : pas d'alerte ni de message sur le cycle.
+    out.push(`<div class="notice"><span class="ico">${I.heart}</span><div><p><b>Tu as noté un test de grossesse positif.</b> Lune met en pause ses alertes et ses messages sur le cycle. Pense à prendre rendez-vous avec un·e médecin, gynécologue ou sage-femme.</p></div></div>`);
+  } else if (p.askMissedPeriod) {
+    // Cycle en cours bien plus long que d'habitude : on demande, on ne suppose pas d'erreur.
+    asked = true;
     out.push(missedQuestion(
-      `Ton cycle en cours dure depuis ${nDays(c.day)}. As-tu eu des règles vers le ${fShort(p.missedPeriodAround)} sans les noter ?`,
+      `Ton cycle en cours dure depuis ${nDays(c.day)}. As-tu eu des règles vers le ${fShort(p.missedPeriodAround)} sans les noter&nbsp;?`,
       p.missedPeriodAround, c.start, 'Non, pas de règles',
     ));
   } else if (!c.inPeriod && (p.mode.predictions ? (p.mode.irregular ? p.beyondUsual : p.late) : c.day >= LONG_CYCLE_CONSULT)) {
@@ -364,11 +398,19 @@ function notices(p, t) {
   // Cycle terminé qui ressemble à deux cycles : on pose la question (le plus récent d'abord),
   // une seule question à la fois.
   const sus = p.stats.suspectCycles[p.stats.suspectCycles.length - 1];
-  if (sus && !p.askMissedPeriod) {
+  if (sus && !asked) {
+    asked = true;
     out.push(missedQuestion(
-      `Ton cycle du ${fShort(sus.start)} au ${fShort(sus.end)} a duré ${nDays(sus.length)}, bien plus que d’habitude. As-tu eu des règles vers le ${fShort(sus.expectedStart)} sans les noter ?`,
+      `Ton cycle du ${fShort(sus.start)} au ${fShort(sus.end)} a duré ${nDays(sus.length)}, bien plus que d’habitude. As-tu eu des règles vers le ${fShort(sus.expectedStart)} sans les noter&nbsp;?`,
       sus.expectedStart, sus.start, 'Non, c’était un cycle long',
     ));
+  }
+
+  // Alerte « à évoquer » : on demande d'abord de vérifier l'historique (comme Apple Santé).
+  const alert = !asked && pendingAlert(p);
+  if (alert) {
+    out.push(`<div class="notice"><span class="ico">${I.info}</span><div><p><b>Lune a remarqué un point à vérifier.</b> ${CLINICAL_TEXT[alert]} Ton historique est-il complet&nbsp;?</p>
+      <div class="notice-actions"><button data-action="alert-confirm" data-key="${alert}">Oui, il est complet</button><button data-action="cal-edit">Je corrige</button><button data-action="alert-dismiss" data-key="${alert}" style="color:var(--text-2)">Ne plus le signaler</button></div></div></div>`);
   }
   const logged = Object.keys(state.days).length;
   const ageOf = (iso) => (validDate(iso) ? E.diffDays(E.toKey(new Date(iso)), t) : Infinity);
@@ -1156,6 +1198,7 @@ function viewInsights() {
 
   return `${head}${tiles}${irregular}${clinicalCard(st)}
     ${cyclesSection(st, t)}
+    ${precisionSection(st)}
     ${tempSection(t)}
     ${feelingsSection(t)}
     ${historySection(st, t)}
@@ -1169,16 +1212,47 @@ const CLINICAL_TEXT = {
   long: 'Au moins 2 de tes 6 derniers cycles ont duré plus de 35 jours.',
   veryLong: 'Un de tes cycles de l’année écoulée a duré 90 jours ou plus.',
   infrequent: 'Moins de 8 règles notées au cours des 12 derniers mois.',
+  longPeriods: 'Au moins 2 de tes 6 dernières règles ont duré plus de 8 jours.',
+  spotting: 'Des saignements entre les règles sont notés dans au moins 2 de tes 6 derniers cycles.',
+  pain: 'Des douleurs intenses sont notées dans au moins 2 de tes 6 derniers cycles.',
 };
 
 function clinicalCard(st) {
-  const flags = (st.clinicalFlags || []).filter((f) => CLINICAL_TEXT[f]);
-  if (!flags.length || hormonal()) return '';
+  if (!pred.hasData || !alertsAllowed(pred)) {
+    return st.alertsPaused && !hormonal()
+      ? '<p class="muted small" style="margin:14px 6px 0">Les alertes sont en pause après un accouchement et pendant l’allaitement.</p>'
+      : '';
+  }
+  const confirmed = new Set(state.settings.alertsConfirmed || []);
+  const flags = (st.clinicalFlags || []).filter((f) => CLINICAL_TEXT[f] && confirmed.has(f));
+  const waiting = pendingAlert(pred);
+  if (!flags.length) {
+    return waiting ? '<p class="muted small" style="margin:14px 6px 0">Un point est en attente de vérification sur l’écran Aujourd’hui.</p>' : '';
+  }
   return `
     <section class="card" style="margin-top:14px">
       <div class="card-head"><h2>À évoquer avec un·e professionnel·le</h2></div>
       <ul class="tips">${flags.map((f) => `<li>${CLINICAL_TEXT[f]}</li>`).join('')}</ul>
-      <p class="hint">Selon les recommandations internationales, ces situations méritent d’en parler à un·e médecin, gynécologue ou sage-femme. Ce n’est pas un diagnostic : les causes sont souvent bénignes (stress, sport intensif, changement de poids, arrêt récent d’une contraception…). L’export en tableau (Réglages → Sauvegarde) peut t’aider à préparer le rendez-vous.</p>
+      <p class="hint">Selon les recommandations internationales, ces situations méritent d’en parler à un·e médecin, gynécologue ou sage-femme. Ce n’est pas un diagnostic : les causes sont souvent bénignes (stress, sport intensif, changement de poids, arrêt récent d’une contraception…).</p>
+      <button class="btn btn-secondary btn-block" style="margin-top:12px" data-action="open-report">${I.download} Préparer un résumé pour le rendez-vous</button>
+    </section>`;
+}
+
+/** Précision mesurée sur l'historique : chaque cycle passé re-prédit à partir des précédents. */
+function precisionSection(st) {
+  const b = st.backtest;
+  if (!b || b.n < 3) return '';
+  const pct = (x) => `${Math.round(x * 100)} %`;
+  const d1 = (v) => (Number.isInteger(v) ? String(v) : num(v, 1));
+  const row = (k, m) => (m ? kvRow('neutral', k, `± ${d1(m.median)} j`, `${pct(m.within3)} à ± 3 jours`) : '');
+  return `
+    <h2 class="section-title">Précision de tes prévisions</h2>
+    <section class="card">
+      <div class="card-head" style="margin-bottom:6px"><h2>± ${d1(b.bayes.median)} ${b.bayes.median > 1 ? 'jours' : 'jour'}</h2><span class="pill">${b.n} cycles testés</span></div>
+      <p class="muted small">Lune a refait ses prévisions pour chacun de tes cycles passés en n’utilisant que les cycles d’avant, puis les a comparées à la réalité. ${pct(b.bayes.within3)} étaient justes à ± 3 jours, et la plage annoncée contenait la vraie date ${pct(b.coverage)} du temps.</p>
+      <div class="kv" style="margin-top:12px">${row('Méthode de Lune', b.bayes)}${row('Moyenne des 6 derniers', b.mean6)}${row('Médiane des 6 derniers', b.median6)}${row('Moyenne pondérée', b.weighted)}</div>
+      ${b.calibration > 1 ? `<p class="hint">Tes cycles ont varié plus que prévu : Lune a élargi ses plages (×${num(b.calibration, 1)}) pour rester honnête.</p>` : ''}
+      ${b.reliable ? '' : '<p class="hint">Indice encore peu parlant : il devient fiable à partir de 6 à 9 cycles.</p>'}
     </section>`;
 }
 
@@ -1352,11 +1426,41 @@ function toggle(name, on, aria) {
 
 const validDate = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
 
+function dateField(name, value, aria) {
+  return `<span class="date-field"><input type="date" max="${today()}" value="${esc(value || '')}" data-change="${name}" aria-label="${esc(aria)}">${value ? `<button class="icon-btn flat" data-action="ctx-clear" data-field="${name.replace('ctx-', '')}" aria-label="Effacer la date">${I.close}</button>` : ''}</span>`;
+}
+
+/** Situation signalée par l'utilisatrice : adapte les prévisions, ne pose jamais de diagnostic. */
+function situationSection(s) {
+  const c = s.context || {};
+  const reset = pred.stats?.context?.resetFrom;
+  const since = reset ? ` Depuis le ${fShort(reset)}, Lune compte ${nDays(pred.stats.context.cyclesSinceReset).replace('jour', 'cycle')} pour ses prévisions.` : '';
+  return `
+    <h2 class="section-title">Ma situation</h2>
+    <div class="list">
+      <div class="row"><span class="label">SOPK (désormais SMOP)<small>Syndrome des ovaires polykystiques</small></span>${toggle('ctx-pcos', c.pcos, 'SOPK')}</div>
+      <div class="row"><span class="label">Périménopause</span>${toggle('ctx-perimenopause', c.perimenopause, 'Périménopause')}</div>
+      <div class="row"><span class="label">Sport intensif ou perte de poids</span>${toggle('ctx-sport', c.sport, 'Sport intensif ou perte de poids')}</div>
+      <div class="row"><span class="label">Accouchement récent<small>${c.birthDate ? `Le ${fFull(c.birthDate)}` : 'Date de l’accouchement'}</small></span>${dateField('ctx-birthDate', c.birthDate, 'Date de l’accouchement')}</div>
+      ${c.birthDate ? `<div class="row"><span class="label">J’allaite</span>${toggle('ctx-breastfeeding', c.breastfeeding, 'Allaitement')}</div>` : ''}
+      <div class="row"><span class="label">Arrêt d’une contraception hormonale<small>${c.contraceptionStop ? `Le ${fFull(c.contraceptionStop)}` : 'Pilule, implant, stérilet hormonal…'}</small></span>${dateField('ctx-contraceptionStop', c.contraceptionStop, 'Date d’arrêt de la contraception')}</div>
+    </div>
+    <p class="list-foot">Ces informations restent sur ton téléphone et ne servent qu’à adapter les prévisions : plages plus larges et pas de fenêtre fertile calculée d’après le calendrier. Lune ne pose jamais de diagnostic. Après un accouchement ou l’arrêt d’une contraception, les cycles d’avant ne comptent plus.${since}</p>`;
+}
+
+function setContext(field, value) {
+  const ctx = { ...(state.settings.context || {}), [field]: value };
+  if (field === 'birthDate' && !value) ctx.breastfeeding = false;
+  state.settings.context = ctx;
+  commit();
+}
+
 function irregularStatus(s) {
   const m = s.irregularMode || 'auto';
   if (m === 'on') return 'Toujours activé';
   if (m === 'off') return 'Toujours désactivé';
-  return mode().irregular ? 'Actif en ce moment : tes cycles varient' : 'Inactif en ce moment';
+  if (!mode().irregular) return 'Inactif en ce moment';
+  return pred.stats?.regularity === 'irregular' ? 'Actif en ce moment : tes cycles varient' : 'Actif en ce moment : situation signalée';
 }
 
 function viewSettings() {
@@ -1408,6 +1512,8 @@ function viewSettings() {
     </div>
     ${hormonal() ? '<p class="list-foot">Avec une contraception hormonale, il n’y a généralement pas d’ovulation : les prévisions de fertilité ne s’appliquent pas.</p>' : ''}
 
+    ${situationSection(s)}
+
     <h2 class="section-title">Rappels</h2>
     <div class="list">
       ${!mode().predictions ? '' : mode().irregular
@@ -1430,7 +1536,8 @@ function viewSettings() {
     <div class="list">
       <button class="row action" data-action="export-backup"><span class="label">Exporter une sauvegarde<small>${validDate(s.lastBackup) ? `Dernière : ${fFull(E.toKey(new Date(s.lastBackup)))}` : 'Aucune sauvegarde pour l’instant'}</small></span>${I.download}</button>
       <button class="row action neutral" data-action="import-backup"><span class="label">Restaurer une sauvegarde</span>${I.chevR}</button>
-      <button class="row action neutral" data-action="export-csv"><span class="label">Exporter en tableau (CSV)<small>Pratique pour un rendez-vous médical</small></span>${I.chevR}</button>
+      <button class="row action neutral" data-action="open-report"><span class="label">Résumé pour un rendez-vous (PDF)<small>12 derniers mois, à imprimer ou enregistrer</small></span>${I.chevR}</button>
+      <button class="row action neutral" data-action="export-csv"><span class="label">Exporter en tableau (CSV)<small>Toutes les données, jour par jour</small></span>${I.chevR}</button>
     </div>
     <p class="list-foot">Supprimer l'app de l'écran d'accueil efface ses données. Range une sauvegarde dans Fichiers ou iCloud Drive de temps en temps.</p>
 
@@ -1543,6 +1650,76 @@ async function importBackupFile(file) {
 // Accueil (premier lancement)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Résumé imprimable pour un rendez-vous (12 derniers mois)
+// ---------------------------------------------------------------------------
+
+function openReport() {
+  const st = pred.stats || E.getStats(state);
+  if (!st.periods.length) { toast('Note d’abord tes règles.'); return; }
+  const t = today();
+  const from = E.addDays(t, -365);
+  const s = state.settings;
+  const ctx = s.context || {};
+  const ovu = new Map((pred.pastOvulations || []).map((o) => [o.start, o]));
+  const ovuText = (o) => {
+    if (!o) return '—';
+    if (o.status === 'confirmed') return `confirmée (${fShort(o.ovulation)})`;
+    if (o.status === 'probable') return `probable (${fShort(o.ovulation)})`;
+    if (o.status === 'notDetected') return 'non détectée (température)';
+    return '—';
+  };
+  const cycles = st.cycles.filter((c) => c.end >= from);
+  const rows = cycles.map((c) => `<tr><td>${fFull(c.start)}</td><td>${c.length} j${c.suspect ? ' (à vérifier)' : ''}</td><td>${c.periodLength} j</td><td>${ovuText(ovu.get(c.start))}</td></tr>`);
+  if (pred.hasData) rows.push(`<tr><td>${fFull(pred.current.start)}</td><td>en cours (jour ${pred.current.day})</td><td>—</td><td>${pred.current.ovulationSource !== 'predicted' ? ovuText({ status: pred.current.ovulationStatus, ovulation: pred.current.ovulation }) : '—'}</td></tr>`);
+
+  const situ = [
+    ctx.pcos && 'SOPK (désormais SMOP)',
+    ctx.perimenopause && 'périménopause',
+    ctx.sport && 'sport intensif ou perte de poids',
+    ctx.birthDate && `accouchement le ${fFull(ctx.birthDate)}${ctx.breastfeeding ? ', allaitement' : ''}`,
+    ctx.contraceptionStop && `arrêt d’une contraception hormonale le ${fFull(ctx.contraceptionStop)}`,
+  ].filter(Boolean);
+
+  const counts = new Map();
+  for (const [k, e] of Object.entries(state.days)) {
+    if (k < from || k > t) continue;
+    for (const id of e.symptoms || []) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const topSym = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const flags = (st.clinicalFlags || []).filter((f) => CLINICAL_TEXT[f]);
+  const recent = cycles.filter((c) => c.counted).map((c) => c.length);
+
+  const kv = [
+    ['Cycles complets (12 mois)', String(recent.length)],
+    ['Durée des cycles', recent.length ? `${Math.min(...recent)} à ${Math.max(...recent)} j (moyenne ${num(recent.reduce((a, b) => a + b, 0) / recent.length, 1)} j)` : '—'],
+    ['Durée moyenne des règles', `${st.avgPeriod} j`],
+    ['Écart médian entre deux cycles', st.medianCLD == null ? '—' : `${num(st.medianCLD, 1)} j`],
+    ['Contraception', label(C.CONTRACEPTION, s.contraception)],
+    ['Situation signalée', situ.length ? situ.join(' · ') : 'aucune'],
+  ];
+
+  overlayRoot.innerHTML = `
+    <div class="overlay report"><div class="report-inner">
+      <div class="report-bar no-print">
+        <button class="icon-btn flat" data-action="close-report" aria-label="Fermer">${I.close}</button>
+        <button class="btn btn-dark" style="min-height:42px" data-action="print-report">${I.download} Imprimer ou enregistrer en PDF</button>
+      </div>
+      <h1>Résumé du cycle menstruel</h1>
+      <p class="report-sub">Du ${fFull(from)} au ${fFull(t)} · généré par l’application Lune à partir de saisies personnelles</p>
+      <h3>En bref</h3>
+      <table class="report-table kv">${kv.map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>
+      <h3>Cycles</h3>
+      <table class="report-table"><thead><tr><th>Début</th><th>Durée</th><th>Règles</th><th>Ovulation</th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="4">Aucun cycle complet sur la période.</td></tr>'}</tbody></table>
+      <h3>Points relevés (selon les recommandations internationales)</h3>
+      ${flags.length ? `<ul>${flags.map((f) => `<li>${CLINICAL_TEXT[f]}</li>`).join('')}</ul>` : '<p>Aucun.</p>'}
+      <h3>Symptômes les plus notés</h3>
+      ${topSym.length ? `<ul>${topSym.map(([id, n]) => `<li>${esc(label(C.SYMPTOMS, id))} : ${nDays(n)}</li>`).join('')}</ul>` : '<p>Aucun symptôme noté.</p>'}
+      <p class="report-foot">Document établi à partir des observations notées par l’utilisatrice. Les ovulations « confirmées » ou « probables » reposent sur la température, la glaire cervicale ou des tests urinaires, pas sur un examen médical. Ce document n’est pas un diagnostic.</p>
+    </div></div>`;
+  document.documentElement.classList.add('noscroll');
+}
+
 const OB_STEPS = ['welcome', 'last', 'period', 'cycle', 'goal', 'contra'];
 
 function renderOnboarding() {
@@ -1653,6 +1830,7 @@ function closePin() {
   overlayRoot.innerHTML = '';
   viewEl.inert = false;
   tabbarEl.inert = false;
+  if (!ui.sheetDay) document.documentElement.classList.remove('noscroll');
 }
 
 function renderPin() {
@@ -1894,6 +2072,19 @@ const actions = {
   'set-goal': (el) => { state.settings.goal = el.dataset.value; commit(); },
   'set-theme': (el) => { state.settings.theme = el.dataset.value; save(); applyTheme(); renderView(); },
   'set-irregular': (el) => { state.settings.irregularMode = el.dataset.value; commit(); },
+  'ctx-clear': (el) => setContext(el.dataset.field, null),
+  'alert-confirm': (el) => {
+    state.settings.alertsConfirmed = [...new Set([...(state.settings.alertsConfirmed || []), el.dataset.key])];
+    commit();
+    toast('Noté : tu retrouves ce point dans le Bilan.');
+  },
+  'alert-dismiss': (el) => {
+    state.settings.alertsDismissed = [...new Set([...(state.settings.alertsDismissed || []), el.dataset.key])];
+    commit();
+  },
+  'open-report': () => openReport(),
+  'print-report': () => window.print(),
+  'close-report': () => { overlayRoot.innerHTML = ''; document.documentElement.classList.remove('noscroll'); },
   'export-ics': () => exportICS(),
   'export-pill': () => exportPill(),
   'export-backup': () => exportBackup(),
@@ -1957,12 +2148,23 @@ const changes = {
     state.settings.contraception = el.value;
     const now = hormonal();
     if (now && !was) { state.settings.showFertility = false; toast('Fertilité masquée : elle ne s’applique pas sous contraception hormonale.'); }
-    if (!now && was) state.settings.showFertility = true;
+    if (!now && was) {
+      // Arrêt d'une contraception hormonale : les saignements d'avant ne décrivent pas le cycle naturel.
+      state.settings.showFertility = true;
+      state.settings.context = { ...(state.settings.context || {}), contraceptionStop: today() };
+      toast('Arrêt noté : tes prochains cycles naturels repartent de zéro (modifiable dans « Ma situation »).');
+    }
     commit();
   },
   pillTime: (el) => { if (el.value) { state.settings.pillTime = el.value; commit(); } },
   showFertility: (el) => { state.settings.showFertility = el.checked; commit(); },
   showPredictions: (el) => { state.settings.showPredictions = el.checked; commit(); },
+  'ctx-pcos': (el) => setContext('pcos', el.checked),
+  'ctx-perimenopause': (el) => setContext('perimenopause', el.checked),
+  'ctx-sport': (el) => setContext('sport', el.checked),
+  'ctx-breastfeeding': (el) => setContext('breastfeeding', el.checked),
+  'ctx-birthDate': (el) => setContext('birthDate', el.value && el.value <= today() ? el.value : null),
+  'ctx-contraceptionStop': (el) => setContext('contraceptionStop', el.value && el.value <= today() ? el.value : null),
   pin: (el) => {
     if (el.checked) startSetPin();
     else {

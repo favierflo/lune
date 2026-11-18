@@ -1,7 +1,7 @@
 // Textes et listes d'options affichés dans l'application.
 // Tu peux modifier librement les libellés ici : ils ne changent pas les données déjà enregistrées.
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 
 export const FLOW = [
   { id: 'spotting', label: 'Spotting', level: 0 },
@@ -36,6 +36,7 @@ export const SYMPTOMS = [
   { id: 'digestion', label: 'Troubles digestifs' },
   { id: 'dizziness', label: 'Vertiges' },
   { id: 'ovupain', label: "Douleur d'ovulation" },
+  { id: 'severepain', label: 'Douleurs intenses' },
 ];
 
 export const ENERGY = [

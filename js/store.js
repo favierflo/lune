@@ -26,7 +26,14 @@ export const DEFAULT_SETTINGS = {
   // Débuts de cycles longs confirmés par l'utilisatrice (« je n'ai pas oublié de noter mes règles »).
   // Toujours remplacer ce tableau (jamais le modifier sur place : il est partagé par défaut).
   longCycles: [],
+  // Situation signalée par l'utilisatrice (jamais déduite par Lune).
+  context: { pcos: false, perimenopause: false, sport: false, breastfeeding: false, birthDate: null, contraceptionStop: null },
+  // Alertes « à évoquer » : confirmées après vérification de l'historique, ou masquées.
+  alertsConfirmed: [],
+  alertsDismissed: [],
 };
+
+const ALERT_IDS = ['short', 'long', 'veryLong', 'infrequent', 'longPeriods', 'spotting', 'pain'];
 
 const NUM_RANGES = { cycleLength: [15, 60], periodLength: [1, 10], lutealLength: [10, 16] };
 const ENUMS = {
@@ -108,6 +115,20 @@ function sanitizeSettings(s) {
       if (typeof v === 'string' && /^\d{2}:\d{2}$/.test(v)) out[k] = v;
     } else if (k === 'lastBackup' || k === 'backupSnoozedAt' || k === 'createdAt') {
       if (v === null || validDate(v)) out[k] = v;
+    } else if (k === 'context') {
+      if (v && typeof v === 'object') {
+        const date = (x) => (typeof x === 'string' && DAY_KEY.test(x) ? x : null);
+        out[k] = {
+          pcos: v.pcos === true,
+          perimenopause: v.perimenopause === true,
+          sport: v.sport === true,
+          breastfeeding: v.breastfeeding === true,
+          birthDate: date(v.birthDate),
+          contraceptionStop: date(v.contraceptionStop),
+        };
+      }
+    } else if (k === 'alertsConfirmed' || k === 'alertsDismissed') {
+      if (Array.isArray(v)) out[k] = [...new Set(v.filter((x) => ALERT_IDS.includes(x)))];
     } else if (k === 'longCycles') {
       if (Array.isArray(v)) out[k] = [...new Set(v.filter((x) => typeof x === 'string' && DAY_KEY.test(x)))].slice(-200);
     } else if (k === 'pinHash' || k === 'pinSalt') {
